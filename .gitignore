@@ -1,0 +1,41 @@
+node_modules/
+*.tgz
+.release/
+SHA256SUMS.txt
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Local DSH credentials, sessions and state
+.dsh/
+.credentials.yaml
+session.jsonl*
+
+# Local authenticated browser tests and real account screenshots
+e2e-*.mjs
+screens/
+.whale-pet-screenshot*.png
+src/host/estimate-test.ts
+
+# Generated build intermediates and maps
+lib/.client-raw.js
+lib/*.map
+coverage/
+dist/
+
+# Windows development/inspection artifacts
+windows/whale-pet-render-test.png
+windows/DshWhalePet.ps1
+windows/assets/*
+!windows/assets/whale-maid.png
+!windows/assets/tail.png
+!windows/assets/ahoge.png
+!windows/assets/whale-icon.ico
+windows/analyze-*.ps1
+windows/restore-*.ps1
+windows/check-walls.ps1
+windows/make-assets.*
+windows/make-keyout.ps1

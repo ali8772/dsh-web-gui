@@ -1,0 +1,12 @@
+{
+  "name": "dsh-whale-pet",
+  "description": "鲸鱼娘桌面宠物：DeepSeek 余额、消费与任务进度悬浮插件",
+  "version": "0.2.0",
+  "entry": {
+    "name": "dsh-whale-pet",
+    "inject": ["credentials", "webServer"]
+  },
+  "client": {
+    "platform": "web"
+  }
+}

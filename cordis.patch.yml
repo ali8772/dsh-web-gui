@@ -1,0 +1,4 @@
+# Activate the plugin when this bundle is installed in a DSH web profile.
+- insert:
+    - id: dsh-whale-pet
+      name: dsh-whale-pet
