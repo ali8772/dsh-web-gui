@@ -19,7 +19,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      - name: Run tests
+        shell: bash
+        run: |
+          set +e
+          output="$(npm test 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            compact="$(printf '%s' "$output" | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')"
+            echo "::error file=test/balance-spend.test.mjs,title=npm test failed::$compact"
+            exit "$status"
+          fi
       - run: npm run check
       - name: Audit package
         run: |
