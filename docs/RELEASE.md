@@ -11,6 +11,7 @@
 ```sh
 npm ci
 npm run build
+npm test
 npm run check
 ```
 
@@ -26,11 +27,11 @@ The tarball must contain only runtime host/client bundles, manifests, bundle pat
 
 ## Smoke test
 
-Install the generated artifact with the documented DSH command in a disposable profile. Restart, refresh, and test APIs, rendering, balance, spend fallback, tasks, navigation, drag persistence, and themes. Remove it afterward.
+Install the generated artifact with the documented DSH command in a disposable profile. Restart, refresh, and test APIs, rendering, first balance baseline, later balance decrease, top-up handling, tasks, navigation, drag persistence, and themes. Remove it afterward.
 
 ## GitHub release
 
-Create and push tag `v0.2.0`. GitHub Actions builds from a clean checkout, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
+Create and push the version tag (for this fix, `v0.2.1`). GitHub Actions builds from a clean checkout, runs tests, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
 
 ## Rollback
 

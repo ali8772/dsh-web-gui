@@ -8,31 +8,31 @@
 
 > The screenshot uses fixed example data (balance ¥88.88) and contains no real account information.
 
-## v0.2.0 highlights
+## v0.2.1 highlights
 
 - Host-side balance lookup using `DEEPSEEK_API_KEY`; credentials are never exposed to browser code.
-- Today and seven Beijing-calendar-day spend on one page, with optional platform data and local session-log estimation fallback.
+- Today and seven Beijing-calendar-day spend strictly accumulated from account balance decreases. Top-ups or grants update the baseline and never reduce accumulated spend.
 - Up to ten running sessions, five visible rows, five-second scrolling, real todo/tool/turn/step activity, and click-through to the session.
 - Draggable animated Whale-chan with saved position, click-to-cycle pages, theme adaptation, peak/off-peak status, and a top-up link.
 - Balance/spend refresh every 60 seconds; tasks refresh more frequently.
 
-> Local estimates cover only calls represented in readable DSH logs and are not billing records.
+> The first successful balance read establishes a baseline and records no spend. Later successful refreshes attribute each balance decrease to the current Beijing date. Changes before upgrading to v0.2.1 cannot be reconstructed automatically.
 
 ## Install
 
 Requirements: Node.js 20+, a working DSH CLI, and `pnpm` on `PATH`.
 
-Download `dsh-whale-pet-0.2.0.tgz` from [Releases](https://github.com/ali8772/dsh-web-gui/releases), then run:
+Download `dsh-whale-pet-0.2.1.tgz` from [Releases](https://github.com/ali8772/dsh-web-gui/releases), then run:
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.2.0.tgz
+dsh plugin --profile web add ./dsh-whale-pet-0.2.1.tgz
 ```
 
 Restart `dsh web`, then refresh the browser. Do not manually add another plugin insertion to the profile patch; the packaged bundle activates itself. See [docs/INSTALL.md](docs/INSTALL.md) for upgrades, removal, and verification.
 
 ## Data and privacy
 
-Credentials stay on the host. An optional `DEEPSEEK_PLATFORM_TOKEN` may supply spend data; otherwise the host reads local DSH session logs for estimates and progress. Use the local API only in a trusted DSH environment and never commit credentials, profile files, session logs, or real account screenshots.
+Credentials stay on the host. The balance ledger is stored at `$DSH_HOME/whale-pet/balance-spend.json` and contains only currency, the last observed balance, and per-day accumulated decreases—never an API key. Session logs are used only for call counts and task progress, not spend amounts. Use the local API only in a trusted DSH environment and never commit credentials, profile files, session logs, or real account screenshots.
 
 ## Windows companion
 
@@ -43,6 +43,7 @@ The repository includes an experimental PowerShell 5.1/WPF companion under `wind
 ```sh
 npm ci
 npm run build
+npm test
 npm run check
 npm pack --dry-run
 ```

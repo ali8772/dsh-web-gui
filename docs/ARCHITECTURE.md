@@ -3,8 +3,8 @@
 ## Overview
 
 ```text
-DSH credentials ──> host plugin ──> /api/whale-pet/{health,state,tasks} ──> client overlay
-session logs ─────> spend/task parsers ────────────────────────────────────┘
+DSH credentials ──> balance API ──> persistent balance ledger ──> state API ──> client overlay
+session logs ─────────────────────> call counts / task progress ────────────┘
 DSH sessions service ───────────────────────────────> task list and open
 ```
 
@@ -20,7 +20,7 @@ The host injects `credentials` and `webServer` and exposes:
 - `GET /api/whale-pet/state`: balance plus spend snapshot.
 - `POST /api/whale-pet/tasks`: progress for requested session IDs.
 
-Balance uses DSH credentials and DeepSeek `/user/balance`. Optional platform spend is preferred; otherwise session token use is grouped by Beijing calendar day and priced locally. Task parsing incrementally replays plain or zstd session logs. `todo/write` supplies completion state; tool, turn, and step events supply activity context.
+Balance uses DSH credentials and DeepSeek `/user/balance`. The first successful observation establishes a baseline. Later decreases are accumulated under `$DSH_HOME/whale-pet/balance-spend.json` for the current Beijing calendar day; balance increases update the baseline without reducing prior spend. Session logs provide call counts and task activity only. Task parsing incrementally replays plain or zstd logs.
 
 ## Client
 
@@ -31,5 +31,5 @@ The client injects `slots` and `sessions`, registers in `shell.overlay`, and inj
 - Credential values remain on the host.
 - The browser receives derived balance, spend, and progress data.
 - Local APIs expose account/session summaries and should remain inside a trusted local DSH environment.
-- Session-log estimates can be incomplete and are not official billing.
+- Spend is accumulated from successful balance observations; pre-baseline history cannot be reconstructed.
 - The Windows companion is separate source-only software and is not loaded by the plugin bundle.

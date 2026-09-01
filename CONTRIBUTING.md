@@ -13,6 +13,7 @@ Requirements: Node.js 20+, npm, DSH, and pnpm for profile management.
 ```sh
 npm ci
 npm run build
+npm test
 npm run check
 npm pack --dry-run
 ```
@@ -23,7 +24,7 @@ Build scripts must be portable. Do not add machine-specific dependency paths. Lo
 
 - Health, state, and tasks API success/failure paths.
 - Missing credentials without leaks.
-- Official spend and local-estimate fallback.
+- First balance baseline, later decreases, top-ups/grants, restart persistence, and Beijing day rollover.
 - Balance/spend/task switching, dragging, themes, resize clamping, scrolling, and session opening.
 - Exact `npm pack --dry-run` contents.
 - Chinese and English docs for user-visible changes.

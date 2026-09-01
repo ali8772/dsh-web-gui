@@ -1,10 +1,9 @@
 /**
  * DSH 会话日志聚合：枚举 `$DSH_HOME/sessions` 下所有持久化会话日志，
- * 回放 `assistant/message` 的 token 用量并按 DeepSeek 官方价格计价，
- * 以北京时间日历日分桶，供「今日消费 / 近 7 天消费」使用。
+ * 回放 `assistant/message` 的 token 用量并按北京时间日历日分桶。
  *
- * 说明：这是本地估算（estimate），只统计经过 DSH 的调用，与官方账户扣费
- * 记录可能存在出入；配置 `DEEPSEEK_PLATFORM_TOKEN` 后可切换到官方数据。
+ * v0.2.1 起，消费金额严格由余额变化账本计算；本模块的聚合结果只用于
+ * 展示调用次数，并保留旧价格字段以兼容内部结构。
  *
  * 日志格式：`$DSH_HOME/sessions/<workspace>/<session-id>/session.jsonl(.zstd)`。
  * `.zstd` 为多个可独立解码的 Zstandard frame 拼接（含 torn 尾帧），与

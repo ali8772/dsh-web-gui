@@ -15,9 +15,17 @@ The command requires `pnpm` on `PATH`. Configure pnpm and rerun from the tarball
 
 Configure a valid `DEEPSEEK_API_KEY` through DSH credentials and check network access. Never paste keys into reports.
 
-## Spend shows “本地估算”
+## Spend remains zero after upgrade
 
-This is expected when the optional platform source is unavailable. Estimates include only readable DSH calls and may differ from billing.
+The first successful v0.2.1 balance read establishes a baseline and intentionally records no spend. Later balance decreases are accumulated after each successful refresh. Pre-upgrade changes cannot be reconstructed.
+
+## Spend is assigned to an unexpected day
+
+A decrease is assigned to the Beijing calendar day when the later balance observation occurs. If the host was offline across midnight, usage since the previous observation is attributed to that later day.
+
+## Reset balance history
+
+Stop `dsh web`, remove `$DSH_HOME/whale-pet/balance-spend.json`, then restart. The next successful balance read creates a new zero-spend baseline.
 
 ## Task page is missing
 

@@ -7,11 +7,9 @@
  *   GET /api/whale-pet/state   — 余额 + 今日/近7天消费
  *
  * 余额通过凭据服务解析 `DEEPSEEK_API_KEY`（与 llm-deepseek 适配器同一引用），
- * 请求 DeepSeek 官方 `/user/balance`。消费金额有两个来源：
- *   1. official（优先）：配置了 `DEEPSEEK_PLATFORM_TOKEN` 时，查询
- *      platform.deepseek.com 官方逐日消费；
- *   2. estimate（兜底）：回放 `$DSH_HOME/sessions` 下的会话日志，按官方
- *      价格表（峰谷感知）对 token 用量计价 —— 只统计经过 DSH 的调用。
+ * 请求 DeepSeek 官方 `/user/balance`。消费金额以相邻余额快照的下降值为准：
+ * 首次观察建立基线，后续下降按北京时间记入当日；充值导致的余额上升只更新
+ * 基线，不抵扣既有消费。会话日志仅用于补充调用次数和任务进度。
  * API Key 永不出宿主：浏览器只访问这些本地路由。
  */
 
@@ -24,15 +22,14 @@ import {
   listSessionLogs,
   spendWindowDays,
   sumWindow,
-  type SessionAggregates,
 } from './sessions.ts'
-import { fetchPlatformWindow, sumPlatformWindow } from './official.ts'
+import { observeBalanceSpend } from './balance-spend.ts'
 import { progressForSession } from './tasks.ts'
 
 export const name = 'dsh-whale-pet'
 export const inject = ['credentials', 'webServer']
 
-const VERSION = '0.2.0'
+const VERSION = '0.2.1'
 
 const HEALTH_PATH = '/api/whale-pet/health'
 const STATE_PATH = '/api/whale-pet/state'
@@ -42,12 +39,9 @@ const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 /** 与 llm-deepseek 适配器对齐的环境变量覆盖。 */
 const BASE_URL_ENV = 'DEEPSEEK_BASE_URL'
 const CREDENTIAL_REF = credentialRef('DEEPSEEK_API_KEY')
-/** 可选的平台会话 token（platform.deepseek.com localStorage 的 userToken）。 */
-const PLATFORM_TOKEN_REF = credentialRef('DEEPSEEK_PLATFORM_TOKEN')
 const BALANCE_PATH = '/user/balance'
 
 const BALANCE_CACHE_MS = 55_000
-const SPEND_CACHE_MS = 60_000
 const FETCH_TIMEOUT_MS = 15_000
 /** 「近 7 天」= 今日 + 前 6 个日历日（北京时间）。 */
 const SPEND_WINDOW_DAYS = 7
@@ -74,19 +68,15 @@ interface BalanceSnapshot {
 }
 
 interface SpendSnapshot {
-  readonly today: { amount: number; amountUsd: number | null; calls: number; source: 'official' | 'estimate' }
-  readonly days7: { amount: number; amountUsd: number | null; calls: number; source: 'official' | 'estimate' }
-  readonly byDay: SessionAggregates['byDay']
+  readonly today: { amount: number; amountUsd: null; calls: number; source: 'balance' }
+  readonly days7: { amount: number; amountUsd: null; calls: number; source: 'balance' }
+  readonly byDay: Readonly<Record<string, number>>
   readonly computedAt: number
 }
 
-interface SpendMemo {
-  at: number
-  value: SpendSnapshot
-}
-
 let balanceMemo: { at: number; value: BalanceSnapshot | null } | undefined
-let spendMemo: SpendMemo | undefined
+/** 进行中的余额请求：并发 /state 共享同一次抓取，避免乱序观察。 */
+let balanceInFlight: Promise<BalanceSnapshot | null> | undefined
 
 function balanceUrl(): string {
   const base = process.env[BASE_URL_ENV] ?? PUBLIC_BASE_URL
@@ -150,90 +140,78 @@ function parseBalanceBody(body: unknown, fetchedAt: number): BalanceSnapshot | n
   }
 }
 
-/** 拉取余额（带 55s 内存缓存）。 */
+/**
+ * 拉取余额（带 55s 内存缓存；并发请求合并为同一次抓取）。
+ * 成功时总是返回余额快照，失败返回 null 并缓存短暂不可用。
+ */
 async function fetchBalance(ctx: Context): Promise<BalanceSnapshot | null> {
   if (balanceMemo !== undefined && Date.now() - balanceMemo.at < BALANCE_CACHE_MS) {
     return balanceMemo.value
   }
-  let snapshot: BalanceSnapshot | null = null
-  try {
-    const hit = await ctx.credentials.resolve(CREDENTIAL_REF)
-    if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') {
-      const response = await fetch(balanceUrl(), {
-        headers: {
-          Authorization: `Bearer ${hit.value}`,
-          Accept: 'application/json',
-        },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      })
-      if (response.ok) {
-        snapshot = parseBalanceBody(await response.json(), Date.now())
+  if (balanceInFlight !== undefined) return balanceInFlight
+  balanceInFlight = (async (): Promise<BalanceSnapshot | null> => {
+    let snapshot: BalanceSnapshot | null = null
+    try {
+      const hit = await ctx.credentials.resolve(CREDENTIAL_REF)
+      if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') {
+        const response = await fetch(balanceUrl(), {
+          headers: {
+            Authorization: `Bearer ${hit.value}`,
+            Accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        })
+        if (response.ok) {
+          snapshot = parseBalanceBody(await response.json(), Date.now())
+        }
       }
+    } catch {
+      // 网络或解析失败 → null，客户端显示余额不可用
     }
-  } catch {
-    // 网络或解析失败 → null，客户端显示余额不可用
+    balanceMemo = { at: Date.now(), value: snapshot }
+    return snapshot
+  })()
+  try {
+    return await balanceInFlight
+  } finally {
+    balanceInFlight = undefined
   }
-  balanceMemo = { at: Date.now(), value: snapshot }
-  return snapshot
+}
+
+/** 解析宿主 DSH 主目录。 */
+function resolveDshHome(ctx: Context): string {
+  try {
+    const homeFn = typeof ctx.get === 'function' ? ctx.get('dshHomePath') : undefined
+    return dshHome(typeof homeFn === 'function' ? homeFn : undefined)
+  } catch {
+    return dshHome()
+  }
 }
 
 /**
- * 计算消费快照：官方优先（平台 token），否则本地估算（会话日志回放）。
- * 结果带 60s 记忆；会话日志本身还有逐会话修订缓存。
+ * 以余额观察账本生成消费快照。会话日志只提供调用次数，不参与金额计算。
+ * 每个成功余额观察都会立即写入账本；不再使用消费缓存，避免吞掉新余额或
+ * 跨北京时间午夜后仍返回昨天的「今日」。
  */
-async function computeSpend(ctx: Context, nowMs = Date.now()): Promise<SpendSnapshot> {
-  if (spendMemo !== undefined && nowMs - spendMemo.at < SPEND_CACHE_MS) {
-    return spendMemo.value
-  }
-  const errors: string[] = []
-  const window = spendWindowDays(nowMs, SPEND_WINDOW_DAYS)
-
-  // --- 官方来源（可选） ---
-  let official: { today: number; days7: number } | null = null
-  try {
-    const platformHit = await ctx.credentials.resolve(PLATFORM_TOKEN_REF)
-    if (platformHit !== undefined && typeof platformHit.value === 'string' && platformHit.value !== '') {
-      const result = await fetchPlatformWindow(platformHit.value, SPEND_WINDOW_DAYS)
-      if (result.ok) {
-        official = {
-          today: sumPlatformWindow(result.days, window.endDay, window.endDay),
-          days7: sumPlatformWindow(result.days, window.startDay, window.endDay),
-        }
-      } else {
-        errors.push(result.error ?? 'official unavailable')
-      }
-    }
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error))
-  }
-
-  // --- 本地估算（兜底 / 无平台 token 时的主来源） ---
-  let home = ''
-  try {
-    const homeFn = typeof ctx.get === 'function' ? ctx.get('dshHomePath') : undefined
-    home = dshHome(typeof homeFn === 'function' ? homeFn : undefined)
-  } catch {
-    home = dshHome()
-  }
+function computeSpend(ctx: Context, balance: BalanceSnapshot | null, nowMs = Date.now()): SpendSnapshot {
+  const home = resolveDshHome(ctx)
+  const ledger = observeBalanceSpend(
+    home,
+    balance?.totalBalance === null || balance === null
+      ? null
+      : { currency: balance.currency, totalBalance: balance.totalBalance },
+    nowMs,
+  )
   const aggregates = aggregateSessionSpend(home)
-  const estimateToday = sumWindow(aggregates.byDay, window.endDay, window.endDay)
-  const estimateDays7 = sumWindow(aggregates.byDay, window.startDay, window.endDay)
-
-  const today = official !== null
-    ? { amount: official.today, amountUsd: null, calls: estimateToday.calls, source: 'official' as const }
-    : { amount: estimateToday.cost, amountUsd: estimateToday.costUsd, calls: estimateToday.calls, source: 'estimate' as const }
-  const days7 = official !== null
-    ? { amount: official.days7, amountUsd: null, calls: estimateDays7.calls, source: 'official' as const }
-    : { amount: estimateDays7.cost, amountUsd: estimateDays7.costUsd, calls: estimateDays7.calls, source: 'estimate' as const }
-
-  const value: SpendSnapshot = {
-    today,
-    days7,
-    byDay: aggregates.byDay,
+  const window = spendWindowDays(nowMs, SPEND_WINDOW_DAYS)
+  const todayCalls = sumWindow(aggregates.byDay, window.endDay, window.endDay).calls
+  const days7Calls = sumWindow(aggregates.byDay, window.startDay, window.endDay).calls
+  return {
+    today: { amount: ledger.today, amountUsd: null, calls: todayCalls, source: 'balance' },
+    days7: { amount: ledger.days7, amountUsd: null, calls: days7Calls, source: 'balance' },
+    byDay: ledger.byDay,
     computedAt: nowMs,
   }
-  spendMemo = { at: nowMs, value }
-  return value
 }
 
 /** Cordis 插件体。 */
@@ -255,7 +233,9 @@ export function apply(ctx: Context): void {
       path: STATE_PATH,
       handler: async (_req, res) => {
         try {
-          const [balance, spend] = await Promise.all([fetchBalance(ctx), computeSpend(ctx)])
+          // 消费依赖本次余额观察，必须顺序执行，不能与余额请求并行。
+          const balance = await fetchBalance(ctx)
+          const spend = computeSpend(ctx, balance)
           sendJson(res, 200, {
             ok: true,
             fetchedAt: Date.now(),
@@ -282,13 +262,7 @@ export function apply(ctx: Context): void {
           const body = await readJsonBody(req)
           const rawIds = Array.isArray(body.ids) ? body.ids : []
           const ids = rawIds.filter((id): id is string => typeof id === 'string')
-          let home = ''
-          try {
-            const homeFn = typeof ctx.get === 'function' ? ctx.get('dshHomePath') : undefined
-            home = dshHome(typeof homeFn === 'function' ? homeFn : undefined)
-          } catch {
-            home = dshHome()
-          }
+          const home = resolveDshHome(ctx)
           const logs = listSessionLogs(home)
           const index = new Map(logs.map((meta) => [meta.id, meta]))
           const tasks = ids.map((id) => progressForSession(index, id))

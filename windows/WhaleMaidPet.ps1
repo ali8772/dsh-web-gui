@@ -349,22 +349,22 @@ function Get-BubbleContent {
       $amount = [double]$script:Data.spend.today.amount
       $calls = [int]$script:Data.spend.today.calls
       $title = '今日消费 ' + (Format-Money $amount $currency)
-      $sub = "DSH 估算 · $calls 次调用"
+      $sub = "余额变化 · $calls 次调用"
     } else {
       $amount = Get-DeltaSpend 1
-      $title = '今日消费 ' + (Format-Money $amount $currency $true)
-      $sub = '余额变化推算 ≈'
+      $title = '今日消费 ' + (Format-Money $amount $currency)
+      $sub = '余额变化'
     }
   } else {
     if ($script:Source -eq 'dsh' -and $null -ne $script:Data.spend) {
       $amount = [double]$script:Data.spend.days7.amount
       $calls = [int]$script:Data.spend.days7.calls
       $title = '近 7 天消费 ' + (Format-Money $amount $currency)
-      $sub = "DSH 估算 · $calls 次调用"
+      $sub = "余额变化 · $calls 次调用"
     } else {
       $amount = Get-DeltaSpend 7
-      $title = '近 7 天消费 ' + (Format-Money $amount $currency $true)
-      $sub = '余额变化推算 ≈'
+      $title = '近 7 天消费 ' + (Format-Money $amount $currency)
+      $sub = '余额变化'
     }
   }
   return @{ title = $title; sub = $sub; cls = $cls; currency = $currency; approx = $approx; calls = $calls }
@@ -1113,8 +1113,8 @@ function Complete-RefreshIfDone {
       $script:FetchError = $result.error
       if ($null -ne $result.data) {
         $script:LastFetchAt = Get-UnixNowMs
-        # 独立模式下记录余额观测，推算消费
-        if ($result.source -eq 'standalone' -and $null -ne $result.data.balance -and $null -ne $result.data.balance.totalBalance) {
+        # 始终记录余额观测：消费统一以余额变化为准；DSH 数据中的消费仅用于显示。
+        if ($null -ne $result.data.balance -and $null -ne $result.data.balance.totalBalance) {
           Record-BalanceObservation ([double]$result.data.balance.totalBalance) $result.data.balance.currency
         }
       }

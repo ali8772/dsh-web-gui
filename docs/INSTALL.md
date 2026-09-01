@@ -4,12 +4,12 @@
 
 - DeepSeek Harness with the `web` profile.
 - Node.js 20+ and `pnpm` on `PATH`.
-- A trusted `dsh-whale-pet-0.2.0.tgz` release artifact.
+- A trusted `dsh-whale-pet-0.2.1.tgz` release artifact.
 
 ## Install
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.2.0.tgz
+dsh plugin --profile web add ./dsh-whale-pet-0.2.1.tgz
 ```
 
 Restart the running `dsh web` process because bundle membership changes at profile startup, then refresh the browser. Do not manually insert a second `dsh-whale-pet` row into the profile patch.
@@ -18,10 +18,9 @@ Restart the running `dsh web` process because bundle membership changes at profi
 
 Configure through DSH credentials, never source files:
 
-- `DEEPSEEK_API_KEY` for balance.
-- Optional `DEEPSEEK_PLATFORM_TOKEN` for the platform spend source.
+- `DEEPSEEK_API_KEY` for balance and balance-change spend accounting.
 
-Without the platform token, spend is estimated from local DSH session logs.
+The first successful balance read establishes a baseline. Later decreases are persisted in `$DSH_HOME/whale-pet/balance-spend.json`; increases update the baseline without reducing accumulated spend. Session logs are used only for call counts and task progress.
 
 ## Verify
 
@@ -30,7 +29,7 @@ curl http://127.0.0.1:3080/api/whale-pet/health
 curl http://127.0.0.1:3080/api/whale-pet/state
 ```
 
-Health must report `dsh-whale-pet`, `0.2.0`, and `ok: true`.
+Health must report `dsh-whale-pet`, `0.2.1`, and `ok: true`.
 
 ## Upgrade
 

@@ -28,8 +28,8 @@ export interface PetState {
     readonly infos: readonly BalanceInfo[]
   } | null
   readonly spend: {
-    readonly today: { readonly amount: number; readonly amountUsd: number | null; readonly calls: number; readonly source: 'official' | 'estimate' }
-    readonly days7: { readonly amount: number; readonly amountUsd: number | null; readonly calls: number; readonly source: 'official' | 'estimate' }
+    readonly today: { readonly amount: number; readonly amountUsd: number | null; readonly calls: number; readonly source: 'balance' }
+    readonly days7: { readonly amount: number; readonly amountUsd: number | null; readonly calls: number; readonly source: 'balance' }
   }
 }
 
@@ -334,7 +334,7 @@ function bubbleFor(mode: number, data: PetState | null, error: string | null, ta
     }
   }
   if (mode === 1) {
-    // 消费页：今日 + 近 7 天合并展示；来源标记（本地估算 ≈ / 官方数据）直接并入各消费行
+    // 消费页：今日 + 近 7 天合并展示；金额以账户余额变化为准
     return { title: '消费', sub: '', cls: '' }
   }
   // mode === 2：任务进度页（仅在有任务时进入，无任务时 modeCount=2）
@@ -634,7 +634,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
             }, peak.active ? '⚡高峰' : '低谷')
           ),
           mode === 1 && data !== null && (
-            h('span', { className: 'wp-source-badge' }, data.spend.today.source === 'official' ? '官方数据' : '本地估算')
+            h('span', { className: 'wp-source-badge', title: '消费金额按账户余额下降累计' }, '余额变化')
           ),
         ),
         h('div', { className: 'wp-bubble-sub' }, bubble.sub),

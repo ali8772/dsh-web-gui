@@ -37,7 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\WhaleMaidPet.ps1
 ## 数据源
 
 1. 首选 `http://127.0.0.1:3080/api/whale-pet/state` 的本地 DSH 插件数据。
-2. DSH 不可达时，可从 WSL DSH credentials 查询余额并本地估算消费。
+2. DSH 不可达时，可从 WSL DSH credentials 查询余额，并按相邻余额下降累计本地消费；首次读取只建立基线，充值不会抵扣已累计消费。
 
 通过环境变量配置 WSL：
 
