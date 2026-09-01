@@ -7,10 +7,12 @@ import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
 const projectRoot = resolve(import.meta.dirname, '..')
+let hostModuleSequence = 0
 
 async function loadHostModule(temp) {
+  const sequence = ++hostModuleSequence
   const credentialsStub = join(temp, 'credentials-stub.mjs')
-  const outfile = join(temp, 'host-under-test.mjs')
+  const outfile = join(temp, `host-under-test-${sequence}.mjs`)
   await writeFile(credentialsStub, "export const credentialRef = (name) => name\n", 'utf8')
   await build({
     entryPoints: [join(projectRoot, 'src/host/index.ts')],
@@ -27,7 +29,7 @@ async function loadHostModule(temp) {
       },
     }],
   })
-  return import(`${pathToFileURL(outfile).href}?test=${Date.now()}`)
+  return import(pathToFileURL(outfile).href)
 }
 
 function makeResponse() {

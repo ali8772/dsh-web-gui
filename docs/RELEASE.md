@@ -31,7 +31,7 @@ Install the generated artifact with the documented DSH command in a disposable p
 
 ## GitHub release
 
-Create and push the version tag (for this fix, `v0.2.1`). GitHub Actions builds from a clean checkout, runs tests, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
+Create and push the version tag (for this fix, `v0.2.2`). GitHub Actions builds from a clean checkout, runs tests, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
 
 ## Rollback
 

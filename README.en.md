@@ -8,7 +8,7 @@
 
 > The screenshot uses fixed example data (balance ¥88.88) and contains no real account information.
 
-## v0.2.1 highlights
+## v0.2.2 highlights
 
 - Host-side balance lookup using `DEEPSEEK_API_KEY`; credentials are never exposed to browser code.
 - Today and seven Beijing-calendar-day spend strictly accumulated from account balance decreases. Top-ups or grants update the baseline and never reduce accumulated spend.
@@ -16,16 +16,16 @@
 - Draggable animated Whale-chan with saved position, click-to-cycle pages, theme adaptation, peak/off-peak status, and a top-up link.
 - Balance/spend refresh every 60 seconds; tasks refresh more frequently.
 
-> The first successful balance read establishes a baseline and records no spend. Later successful refreshes attribute each balance decrease to the current Beijing date. Changes before upgrading to v0.2.1 cannot be reconstructed automatically.
+> The first successful balance read establishes a baseline and records no spend. Later successful refreshes attribute each balance decrease to the current Beijing date. Changes before upgrading to v0.2.2 cannot be reconstructed automatically.
 
 ## Install
 
 Requirements: Node.js 20+, a working DSH CLI, and `pnpm` on `PATH`.
 
-Download `dsh-whale-pet-0.2.1.tgz` from [Releases](https://github.com/ali8772/dsh-web-gui/releases), then run:
+Download `dsh-whale-pet-0.2.2.tgz` from [Releases](https://github.com/ali8772/dsh-web-gui/releases), then run:
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.2.1.tgz
+dsh plugin --profile web add ./dsh-whale-pet-0.2.2.tgz
 ```
 
 Restart `dsh web`, then refresh the browser. Do not manually add another plugin insertion to the profile patch; the packaged bundle activates itself. See [docs/INSTALL.md](docs/INSTALL.md) for upgrades, removal, and verification.

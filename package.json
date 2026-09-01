@@ -1,7 +1,7 @@
 {
   "name": "dsh-whale-pet",
   "description": "DeepSeek Whale-chan desktop pet for DSH Web GUI with balance, spending, and live task progress",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

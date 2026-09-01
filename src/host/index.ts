@@ -29,7 +29,7 @@ import { progressForSession } from './tasks.ts'
 export const name = 'dsh-whale-pet'
 export const inject = ['credentials', 'webServer']
 
-const VERSION = '0.2.1'
+const VERSION = '0.2.2'
 
 const HEALTH_PATH = '/api/whale-pet/health'
 const STATE_PATH = '/api/whale-pet/state'

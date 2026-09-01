@@ -8,7 +8,7 @@
 
 > 截图使用固定示例数据（余额 ¥88.88），不包含真实账户信息。
 
-## v0.2.1 功能
+## v0.2.2 功能
 
 - **余额**：宿主通过 DSH credentials 读取 `DEEPSEEK_API_KEY` 并查询余额；密钥不会进入浏览器。
 - **消费**：同页展示今日和近 7 个北京时间自然日，金额严格按账户余额下降累计；充值或赠金导致的余额上升只更新计算基线，不抵扣已累计消费。
@@ -16,16 +16,16 @@
 - **鲸鱼娘**：透明立绘、漂浮动画、拖拽及位置记忆、点击切页、明暗背景自适应、高峰/低谷提示和充值入口。
 - **刷新**：余额和消费每 60 秒刷新，任务状态按更短间隔更新。
 
-> 首次成功读取余额只建立基线，不产生消费；之后每次成功刷新时，将相较上次观察到的余额下降计入当前北京时间日期。升级到 v0.2.1 前的历史余额变化无法自动还原。
+> 首次成功读取余额只建立基线，不产生消费；之后每次成功刷新时，将相较上次观察到的余额下降计入当前北京时间日期。升级到 v0.2.2 前的历史余额变化无法自动还原。
 
 ## 安装
 
 要求：Node.js 20+、可运行的 DSH CLI，且 `pnpm` 在 `PATH` 中。
 
-从 [GitHub Releases](https://github.com/ali8772/dsh-web-gui/releases) 下载 `dsh-whale-pet-0.2.1.tgz`，然后执行：
+从 [GitHub Releases](https://github.com/ali8772/dsh-web-gui/releases) 下载 `dsh-whale-pet-0.2.2.tgz`，然后执行：
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.2.1.tgz
+dsh plugin --profile web add ./dsh-whale-pet-0.2.2.tgz
 ```
 
 重启 `dsh web`，再刷新浏览器。不要在 profile patch 中重复插入插件；安装包自带的 bundle patch 负责激活。升级、卸载和验证步骤见 [安装文档](docs/INSTALL.md)。
@@ -48,7 +48,7 @@ curl http://127.0.0.1:3080/api/whale-pet/health
 预期包含：
 
 ```json
-{"plugin":"dsh-whale-pet","version":"0.2.1","ok":true}
+{"plugin":"dsh-whale-pet","version":"0.2.2","ok":true}
 ```
 
 ## Windows 伴侣

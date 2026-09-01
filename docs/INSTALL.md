@@ -4,12 +4,12 @@
 
 - DeepSeek Harness with the `web` profile.
 - Node.js 20+ and `pnpm` on `PATH`.
-- A trusted `dsh-whale-pet-0.2.1.tgz` release artifact.
+- A trusted `dsh-whale-pet-0.2.2.tgz` release artifact.
 
 ## Install
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.2.1.tgz
+dsh plugin --profile web add ./dsh-whale-pet-0.2.2.tgz
 ```
 
 Restart the running `dsh web` process because bundle membership changes at profile startup, then refresh the browser. Do not manually insert a second `dsh-whale-pet` row into the profile patch.
@@ -29,7 +29,7 @@ curl http://127.0.0.1:3080/api/whale-pet/health
 curl http://127.0.0.1:3080/api/whale-pet/state
 ```
 
-Health must report `dsh-whale-pet`, `0.2.1`, and `ok: true`.
+Health must report `dsh-whale-pet`, `0.2.2`, and `ok: true`.
 
 ## Upgrade
 

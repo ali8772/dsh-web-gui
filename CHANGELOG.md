@@ -4,7 +4,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-08-31
+## [0.2.2] - 2026-09-01
 
 ### Fixed
 - Calculate today and seven-day spend from persisted account balance decreases instead of token pricing or platform usage data.
@@ -44,6 +44,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Added
 - Initial draggable pet with balance, today spend, seven-day spend, and local estimation.
 
-[Unreleased]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ali8772/dsh-web-gui/releases/tag/v0.2.0

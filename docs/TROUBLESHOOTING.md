@@ -17,7 +17,7 @@ Configure a valid `DEEPSEEK_API_KEY` through DSH credentials and check network a
 
 ## Spend remains zero after upgrade
 
-The first successful v0.2.1 balance read establishes a baseline and intentionally records no spend. Later balance decreases are accumulated after each successful refresh. Pre-upgrade changes cannot be reconstructed.
+The first successful v0.2.2 balance read establishes a baseline and intentionally records no spend. Later balance decreases are accumulated after each successful refresh. Pre-upgrade changes cannot be reconstructed.
 
 ## Spend is assigned to an unexpected day
 
