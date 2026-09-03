@@ -228,6 +228,8 @@ function emptyDay(): MutableDaySpend {
 }
 
 interface PricedEvent {
+  /** 该 assistant/message 发生时生效的 request/header 模型。 */
+  model: string
   time: number
   cost: number
   costUsd: number
@@ -276,6 +278,7 @@ export function replayLogContent(content: string, price: (model: string, timeMs:
       price(currentModel, time),
     )
     out.push({
+      model: currentModel,
       time,
       cost: breakdown.cost,
       costUsd: breakdown.costUsd,

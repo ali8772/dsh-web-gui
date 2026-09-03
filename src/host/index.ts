@@ -1,15 +1,18 @@
 /**
  * dsh-whale-pet — host half.
  *
- * 大肥鲸桌面宠物的数据服务：在 dsh web server 上注册两条精确路由：
+ * 大肥鲸桌面宠物的数据服务：在 dsh web server 上注册精确路由：
  *
- *   GET /api/whale-pet/health  — 存活检查
- *   GET /api/whale-pet/state   — 余额 + 今日/近7天消费
+ *   GET /api/whale-pet/health       — 存活检查
+ *   GET /api/whale-pet/state        — 余额 + 今日/近7天消费
+ *   GET /api/whale-pet/opencode-go  — OpenCode Go 套餐额度（5 小时/7 天/1 个月）
  *
  * 余额通过凭据服务解析 `DEEPSEEK_API_KEY`（与 llm-deepseek 适配器同一引用），
  * 请求 DeepSeek 官方 `/user/balance`。消费金额以相邻余额快照的下降值为准：
  * 首次观察建立基线，后续下降按北京时间记入当日；充值导致的余额上升只更新
  * 基线，不抵扣既有消费。会话日志仅用于补充调用次数和任务进度。
+ * OpenCode Go 额度由官方网关 `https://opencode.ai/zen/go/v1/usage` 提供，
+ * 凭证优先 `OPENCODE_GO_API_KEY`，回退 opencode CLI 登录文件；密钥不出宿主。
  * API Key 永不出宿主：浏览器只访问这些本地路由。
  */
 
@@ -24,16 +27,19 @@ import {
   sumWindow,
 } from './sessions.ts'
 import { observeBalanceSpend } from './balance-spend.ts'
-import { progressForSession } from './tasks.ts'
+import { fetchOpenCodeGoUsage } from './opencode.ts'
+import { progressForSession, sessionSummary } from './tasks.ts'
 
 export const name = 'dsh-whale-pet'
 export const inject = ['credentials', 'webServer']
 
-const VERSION = '0.2.2'
+const VERSION = '0.3.0'
 
 const HEALTH_PATH = '/api/whale-pet/health'
 const STATE_PATH = '/api/whale-pet/state'
 const TASKS_PATH = '/api/whale-pet/tasks'
+const TASK_SUMMARY_PATH = '/api/whale-pet/task-summary'
+const OPENCODE_GO_PATH = '/api/whale-pet/opencode-go'
 
 const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 /** 与 llm-deepseek 适配器对齐的环境变量覆盖。 */
@@ -275,5 +281,52 @@ export function apply(ctx: Context): void {
       },
     }),
     'dsh-whale-pet: tasks route',
+  )
+
+  // 任务完成汇总：POST { id: string } → 单会话 token/费用汇总
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: TASK_SUMMARY_PATH,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const id = typeof body.id === 'string' ? body.id : ''
+          if (id === '') {
+            sendJson(res, 400, { ok: false, error: 'bad-request', message: 'id is required' })
+            return
+          }
+          const home = resolveDshHome(ctx)
+          const logs = listSessionLogs(home)
+          const index = new Map(logs.map((meta) => [meta.id, meta]))
+          const summary = sessionSummary(index, id)
+          sendJson(res, 200, { ok: true, fetchedAt: Date.now(), summary })
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: task-summary route failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+    'dsh-whale-pet: task-summary route',
+  )
+
+  // OpenCode Go 套餐额度：GET → { ok, fetchedAt, usage }（凭证与网关请求全部留在宿主）
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: OPENCODE_GO_PATH,
+      handler: async (_req, res) => {
+        try {
+          const usage = await fetchOpenCodeGoUsage()
+          sendJson(res, 200, { ok: true, fetchedAt: usage.fetchedAt, usage })
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: opencode-go route failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+    'dsh-whale-pet: opencode-go route',
   )
 }

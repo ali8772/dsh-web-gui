@@ -4,6 +4,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
+### Added
+- OpenCode Go quota page showing used percentage, remaining quota, and reset time for the rolling 5-hour, 7-day, and monthly windows. The host reads the official gateway `https://opencode.ai/zen/go/v1/usage` with the CLI login file as a transparent credential source; the API key never leaves the host.
+- Task-completion dialog that displays split token counts and estimated cost for the latest conversation and the full session, with per-model breakdowns so mixed-model usage is priced using each model's own rate.
+- Subagent rows now nest visually under their parent task family in the task progress page.
+- `approval/decided` clears the yellow awaiting-user indicator immediately so the task dot returns to green after approval.
+
+### Changed
+- Balance and combined spend are now a single page; the task progress page and the OpenCode Go quota page are separate modes. The pager shows two dots when idle and three when a task is running.
+- The latest model used in the current conversation is preserved so its pricing is not silently downgraded to a fallback model after the user boundary.
+
+### Security
+- Local-auth E2E scripts and real account screenshots remain excluded from Git and release packages; no credentials are bundled with the plugin.
+
 ## [0.2.2] - 2026-09-01
 
 ### Fixed

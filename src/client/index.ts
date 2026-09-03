@@ -21,7 +21,10 @@ export function apply(ctx: Context): void {
   const openSession = typeof sessionsCtx?.open === 'function'
     ? (id: string): void => sessionsCtx?.open?.(id)
     : undefined
-  attachTaskSource(sessionsCtx?.list as never, openSession)
+  ctx.effect(
+    () => attachTaskSource(sessionsCtx?.list as never, openSession),
+    'dsh-whale-pet: task source',
+  )
   ctx.effect(() => {
     const tag = document.createElement('style')
     tag.setAttribute('data-dsh-plugin', 'dsh-whale-pet')
