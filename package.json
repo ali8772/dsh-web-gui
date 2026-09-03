@@ -1,7 +1,7 @@
 {
   "name": "dsh-whale-pet",
-  "description": "DeepSeek Whale-chan desktop pet for DSH Web GUI with balance, spending, and live task progress",
-  "version": "0.3.0",
+  "description": "DeepSeek Whale-chan pet for DSH Web GUI with balance, tasks, quotas, and importable interactive Live2D models",
+  "version": "0.4.0",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -13,6 +13,8 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/live2d.js",
+    "lib/live2dcubismcore.min.js",
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",
@@ -37,7 +39,9 @@
     "plugin",
     "web-gui",
     "desktop-pet",
-    "whale-chan"
+    "whale-chan",
+    "live2d",
+    "cubism"
   ],
   "dsh": {
     "bundle": {
@@ -50,7 +54,7 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check lib/index.js && node --check lib/client.js",
+    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/live2d.js && node --check lib/live2dcubismcore.min.js",
     "pack:plugin": "npm run build && npm test && npm run check && npm pack"
   },
   "peerDependencies": {
@@ -74,5 +78,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^6.5.10"
   }
 }

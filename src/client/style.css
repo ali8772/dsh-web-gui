@@ -36,11 +36,11 @@
 }
 
 /* ---- 气泡 ---- */
-/* 绝对定位在鲸鱼上方：鲸鱼锚定底部不动，气泡变高时向上生长，不会把鲸鱼顶出屏幕 */
+/* 绝对定位在鲸鱼上方：跟随模型视觉顶部（中心缩放后顶缘 = 126.5 + 112.5×scale），始终保持 4px 间距 */
 .wp-bubble {
   position: absolute;
   left: 50%;
-  bottom: 243px; /* 鲸鱼顶(1px 处) + 4px 间距，气泡悬浮在鲸鱼娘头顶上方 */
+  bottom: calc(130.5px + 112.5px * var(--wp-scale, 1)); /* 鲸鱼中心(126.5px) + 半高×scale + 4px 间距 */
   transform: translateX(-50%);
   min-width: 118px;
   max-width: 210px;
@@ -563,9 +563,11 @@
   position: absolute;
   left: 50%;
   bottom: 14px; /* 给底部模式分页器留出空间 */
-  transform: translateX(-50%);
   width: 129px;
   height: 225px;
+  /* translateX + scale 合并到同一 transform：避免独立 scale 属性的 origin 行为差异。 */
+  transform: translateX(-50%) scale(var(--wp-scale, 1));
+  transform-origin: center center; /* 元素正中心（与 50% 50% 等价） */
   filter: drop-shadow(0 8px 14px rgba(30, 45, 110, 0.35));
 }
 
@@ -674,10 +676,12 @@
 }
 
 /* ---- 模式分页指示器 ---- */
+/* 紧贴模型 box 视觉底部下方 ~2px；随 --wp-scale 一起向下/向上移动。 */
 .wp-pager {
   position: absolute;
   left: 50%;
-  bottom: 2px;
+  /* whale visual bottom 距 pet bottom = 126.5 - 112.5×scale；pager 高约 14px + 2px 间隙。 */
+  bottom: calc(114.5px - 112.5px * var(--wp-scale, 1));
   transform: translateX(-50%);
   display: flex;
   gap: 4px;
@@ -866,3 +870,184 @@
   text-align: center;
   color: var(--dsw-alias-label-tertiary, #6b7280);
 }
+
+/* ---- Live2D（可选：导入模型替换默认鲸鱼娘） ---- */
+.wp-whale-live2d {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.wp-live2d-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+.wp-pet.wp-live2d-active .wp-whale-live2d {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+.wp-pet.wp-live2d-active .wp-whale-img { display: none; }
+.wp-pet.wp-live2d-active .wp-whale-svg { animation: none; }
+
+/* 齿轮按钮：气泡右上角 */
+.wp-live2d-config {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(120, 140, 190, 0.4));
+  border-radius: 50%;
+  background: var(--dsw-alias-fill-l1, rgba(20, 24, 34, 0.85));
+  color: var(--dsw-alias-label-secondary, #9aa4b2);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease, transform 120ms ease;
+  pointer-events: auto;
+}
+.wp-live2d-config:hover { opacity: 1; transform: scale(1.1); }
+
+/* 设置浮层 */
+.wp-live2d-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483201;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+.wp-live2d-dialog {
+  width: 340px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  pointer-events: auto;
+  border-radius: 14px;
+  background: var(--dsw-alias-surface, #ffffff);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+.wp-pet.wp-bg-dark .wp-live2d-dialog { background: #2a2d35; }
+.wp-live2d-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+}
+.wp-live2d-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #1a1d24);
+}
+.wp-pet.wp-bg-dark .wp-live2d-title { color: rgba(255, 255, 255, 0.92); }
+.wp-live2d-close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wp-live2d-close:hover { background: var(--dsw-alias-fill-l2, rgba(128, 140, 180, 0.14)); }
+.wp-live2d-body {
+  padding: 4px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.wp-live2d-status {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-fill-l1, rgba(128, 140, 180, 0.08));
+  color: var(--dsw-alias-label-secondary, #9aa4b2);
+}
+.wp-pet.wp-bg-light .wp-live2d-status { color: rgba(20, 22, 28, 0.7); }
+.wp-live2d-status[data-live2d-status="ready"] {
+  color: #2ea44f;
+  background: rgba(63, 185, 80, 0.12);
+}
+.wp-live2d-status[data-live2d-status="error"] {
+  color: #e5484d;
+  background: rgba(229, 72, 77, 0.1);
+}
+.wp-live2d-section { display: flex; flex-direction: column; gap: 6px; }
+.wp-live2d-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary, #9aa4b2);
+}
+.wp-live2d-file,
+.wp-live2d-url {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(120, 140, 190, 0.25));
+  background: var(--dsw-alias-fill-l1, rgba(20, 24, 34, 0.04));
+  color: var(--dsw-alias-label-primary, #1a1d24);
+}
+.wp-pet.wp-bg-dark .wp-live2d-file,
+.wp-pet.wp-bg-dark .wp-live2d-url {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+}
+.wp-live2d-urlrow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.wp-live2d-action {
+  flex: none;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: #4d6bfe;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wp-live2d-action:disabled { opacity: 0.5; cursor: not-allowed; }
+.wp-live2d-controls { display: flex; gap: 8px; }
+.wp-live2d-scalerow { display: flex; gap: 8px; align-items: center; }
+.wp-live2d-scale {
+  flex: 1;
+  min-width: 0;
+  accent-color: #4d6bfe;
+  cursor: pointer;
+}
+.wp-live2d-hint {
+  font-size: 9.5px;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+}
+.wp-pet.wp-bg-light .wp-live2d-hint { color: rgba(255, 255, 255, 0.55); }
+.wp-live2d-secondary {
+  background: var(--dsw-alias-fill-l2, rgba(77, 107, 254, 0.14));
+  color: #4d6bfe;
+  border: 1px solid rgba(77, 107, 254, 0.3);
+}
+.wp-live2d-remove {
+  padding: 6px 12px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(229, 72, 77, 0.4));
+  border-radius: 8px;
+  background: transparent;
+  color: #e5484d;
+  font-size: 11px;
+  cursor: pointer;
+}
+.wp-live2d-remove:hover { background: rgba(229, 72, 77, 0.08); }

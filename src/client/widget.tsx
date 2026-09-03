@@ -9,6 +9,35 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import whaleChanUrl from '../../assets/whale-chan.png'
+import {
+  importModelFromUrl,
+  importModelFromZip,
+  loadStoredModel,
+  readConfig,
+  removeStoredModel,
+} from './live2d/ui.ts'
+import type { Live2DHandle } from './live2d/core.ts'
+import type { StoredModel } from './live2d/parse.ts'
+import { ensureCubismCore } from './live2d/runtime.ts'
+
+/** 动态加载 Live2D chunk（pixi + Cubism 渲染），避免运行时检查进入主 bundle。 */
+interface Live2DChunk {
+  mountLive2D(canvas: HTMLCanvasElement, stored: StoredModel, options?: { scale?: number }): Promise<Live2DHandle>
+}
+let live2dChunkPromise: Promise<Live2DChunk> | null = null
+async function loadLive2DChunk(): Promise<Live2DChunk> {
+  // pixi-live2d-display/cubism4 在模块顶层检查全局，因此顺序不能颠倒。
+  await ensureCubismCore()
+  if (live2dChunkPromise === null) {
+    live2dChunkPromise = import('/dsh-whale-pet-live2d.js')
+      .then((mod) => mod as unknown as Live2DChunk)
+      .catch((cause) => {
+        live2dChunkPromise = null
+        throw cause
+      })
+  }
+  return live2dChunkPromise
+}
 
 export interface BalanceInfo {
   readonly currency: string
@@ -36,8 +65,25 @@ export interface PetState {
 
 const REFRESH_MS = 60_000
 const POS_KEY = 'dsh-whale-pet:pos'
+const SCALE_KEY = 'dsh-whale-pet:scale'
 const PET_W = 170
 const PET_H = 240 // 容纳放大后的鲸鱼娘（129×225 + 底部偏移）
+const MIN_SCALE = 0.5
+const MAX_SCALE = 2
+const DEFAULT_SCALE = 1
+
+/** 读取持久化的宠物大小（0.5–2），无值/无效值回退 1。 */
+function loadPetScale(): number {
+  try {
+    const raw = localStorage.getItem(SCALE_KEY)
+    if (raw === null) return DEFAULT_SCALE
+    const value = Number(raw)
+    if (!Number.isFinite(value)) return DEFAULT_SCALE
+    return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
+  } catch {
+    return DEFAULT_SCALE
+  }
+}
 
 const MODE_LABELS = ['余额与消费', '任务进度', 'OpenCode Go'] as const
 
@@ -610,6 +656,141 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   const [goUsage, setGoUsage] = useState<OpenCodeGoUsage | null>(null)
   const [goError, setGoError] = useState<string | null>(null)
   const [goFetching, setGoFetching] = useState(false)
+  const [petScale, setPetScale] = useState(() => loadPetScale())
+  const petScaleRef = useRef(petScale)
+  petScaleRef.current = petScale
+
+  const updatePetScale = (value: number): void => {
+    const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
+    setPetScale(clamped)
+    try {
+      localStorage.setItem(SCALE_KEY, String(clamped))
+    } catch {
+      // 忽略存储失败
+    }
+  }
+
+  // ---- Live2D（可选移植模型） ----
+  const [live2d, setLive2d] = useState<{ phase: 'off' | 'loading' | 'ready' | 'error'; name?: string; error?: string }>({ phase: 'off' })
+  const [live2dOpen, setLive2dOpen] = useState(false)
+  const [live2dUrl, setLive2dUrl] = useState('')
+  const [live2dExprCount, setLive2dExprCount] = useState(0)
+  const live2dHandleRef = useRef<Live2DHandle | null>(null)
+  const live2dCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const live2dFileRef = useRef<HTMLInputElement | null>(null)
+  const live2dOperationRef = useRef(0)
+
+  const setLive2dCanvas = (node: HTMLCanvasElement | null): void => {
+    live2dCanvasRef.current = node
+  }
+
+  /** 用已持久化模型挂载/重挂 Live2D；只有当前 operation 才能接管画布。 */
+  const mountStored = async (stored: StoredModel, operation: number): Promise<void> => {
+    const canvas = live2dCanvasRef.current
+    if (canvas === null || !canvas.isConnected) throw new Error('Live2D 画布尚未就绪，请稍后重试')
+    const chunk = await loadLive2DChunk()
+    if (operation !== live2dOperationRef.current) return
+    const nextHandle = await chunk.mountLive2D(canvas, stored, { scale: petScaleRef.current })
+    if (operation !== live2dOperationRef.current || !canvas.isConnected) {
+      nextHandle.dispose()
+      return
+    }
+    live2dHandleRef.current?.dispose()
+    live2dHandleRef.current = nextHandle
+    setLive2dExprCount(nextHandle.expressionCount())
+  }
+
+  /** 大小变化时同步提高渲染分辨率，Live2D 放大后仍保持清晰。 */
+  useEffect(() => {
+    live2dHandleRef.current?.setScale(petScale)
+  }, [petScale])
+
+  const handleZipImport = async (file: File): Promise<void> => {
+    const operation = ++live2dOperationRef.current
+    setLive2d({ phase: 'loading' })
+    try {
+      await loadLive2DChunk()
+      const bytes = await file.arrayBuffer()
+      const { config } = await importModelFromZip(bytes)
+      const stored = await loadStoredModel()
+      if (stored === null) throw new Error('导入后模型数据缺失')
+      await mountStored(stored, operation)
+      if (operation !== live2dOperationRef.current) return
+      setLive2d({ phase: 'ready', name: config.name })
+      setLive2dOpen(false)
+    } catch (cause) {
+      if (operation === live2dOperationRef.current) {
+        setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+      }
+    }
+  }
+
+  const handleUrlImport = async (): Promise<void> => {
+    const url = live2dUrl.trim()
+    if (url === '') return
+    const operation = ++live2dOperationRef.current
+    setLive2d({ phase: 'loading' })
+    try {
+      await loadLive2DChunk()
+      const { config } = await importModelFromUrl(url)
+      const stored = await loadStoredModel()
+      if (stored === null) throw new Error('导入后模型数据缺失')
+      await mountStored(stored, operation)
+      if (operation !== live2dOperationRef.current) return
+      setLive2d({ phase: 'ready', name: config.name })
+      setLive2dOpen(false)
+    } catch (cause) {
+      if (operation === live2dOperationRef.current) {
+        setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+      }
+    }
+  }
+
+  const handleRemoveModel = async (): Promise<void> => {
+    ++live2dOperationRef.current
+    live2dHandleRef.current?.dispose()
+    live2dHandleRef.current = null
+    setLive2dExprCount(0)
+    try {
+      await removeStoredModel()
+      setLive2d({ phase: 'off' })
+      setLive2dOpen(false)
+    } catch (cause) {
+      setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+    }
+  }
+
+  // 挂载时读取配置：已导入模型则自动恢复。
+  useEffect(() => {
+    const cfg = readConfig()
+    if (cfg === null) return
+    const operation = ++live2dOperationRef.current
+    setLive2d({ phase: 'loading' })
+    void (async () => {
+      try {
+        await loadLive2DChunk()
+        const stored = await loadStoredModel()
+        if (operation !== live2dOperationRef.current) return
+        if (stored === null) {
+          setLive2d({ phase: 'error', error: '已保存模型版本过旧，请重新导入' })
+          return
+        }
+        await mountStored(stored, operation)
+        if (operation === live2dOperationRef.current) setLive2d({ phase: 'ready', name: stored.config.name })
+      } catch (cause) {
+        if (operation === live2dOperationRef.current) {
+          setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+        }
+      }
+    })()
+    return () => {
+      ++live2dOperationRef.current
+      live2dHandleRef.current?.dispose()
+      live2dHandleRef.current = null
+    }
+    // 只在挂载时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const rootRef = useRef<HTMLDivElement | null>(null)
   const petRef = useRef<HTMLDivElement | null>(null)
@@ -624,6 +805,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     curX: number
     curY: number
     moved: boolean
+    startedOnLive2D: boolean
   } | null>(null)
 
   const refresh = async (): Promise<void> => {
@@ -812,11 +994,10 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
         } catch {
           // ignore
         }
-      } else {
-        // 单击 → 循环切换显示模式
+      } else if (!drag.startedOnLive2D) {
+        // 普通鲸鱼单击 → 切换信息页；Live2D 单击留给模型交互动作。
         setMode((m) => {
           const next = (m + 1) % ((taskRef.current.running ? 2 : 1) + 1)
-          // 切到任务进度页时强制刷新，确保绿点颜色立刻更新。
           if (next === 1) taskForceProgressRefresh?.()
           return next
         })
@@ -828,7 +1009,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
       // 充值按钮/进度条/任务行上的按下不进入拖拽（避免点击它们触发模式切换/拖拽）
       const target = event.target as HTMLElement | null
       if (target !== null && typeof target.closest === 'function'
-        && target.closest('.wp-recharge-btn, .wp-task-prog, .wp-task-row') !== null) return
+        && target.closest('.wp-recharge-btn, .wp-task-prog, .wp-task-row, .wp-live2d-config') !== null) return
       const start = posRef.current
       dragState.current = {
         startX: event.clientX,
@@ -838,11 +1019,12 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
         curX: 0,
         curY: 0,
         moved: false,
+        startedOnLive2D: target?.closest('.wp-live2d-canvas') !== null,
       }
       window.addEventListener('pointermove', onPointerMove)
       window.addEventListener('pointerup', finishDrag)
       window.addEventListener('pointercancel', finishDrag)
-      event.preventDefault()
+      if (target?.closest('.wp-live2d-canvas') === null) event.preventDefault()
     }
 
     pet.addEventListener('pointerdown', onPointerDown)
@@ -922,11 +1104,12 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   return h('div', { className: 'wp-root', ref: rootRef },
     h('div',
       {
-        className: `wp-pet${dragging ? ' wp-dragging' : ''}${bubble.cls === 'wp-low-balance' ? ' wp-low-balance' : ''}${bgLight ? ' wp-bg-light' : ' wp-bg-dark'}`,
+        className: `wp-pet${dragging ? ' wp-dragging' : ''}${bubble.cls === 'wp-low-balance' ? ' wp-low-balance' : ''}${bgLight ? ' wp-bg-light' : ' wp-bg-dark'}${live2d.phase === 'ready' ? ' wp-live2d-active' : ''}`,
         ref: petRef,
         style: {
           transform: `translate(${pos.x}px, ${pos.y}px)`,
           transition: dragging ? 'none' : 'transform 160ms ease-out',
+          ['--wp-scale' as string]: String(petScale),
         },
         title: '点击切换：余额与消费 / 任务进度 / OpenCode Go 额度',
       },
@@ -1037,12 +1220,28 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
           }, '充值 +')
         ),
       ),
-      h('div', { className: 'wp-whale' }, h('img', {
-        className: 'wp-whale-svg wp-whale-img',
-        src: whaleChanUrl,
-        alt: 'DeepSeek 鲸鱼娘',
-        draggable: false,
-      })),
+      h('div', { className: 'wp-whale' },
+        h('div', { className: 'wp-whale-live2d' },
+          h('canvas', { ref: setLive2dCanvas, className: 'wp-live2d-canvas' }),
+        ),
+        h('img', {
+          className: 'wp-whale-svg wp-whale-img',
+          src: whaleChanUrl,
+          alt: 'DeepSeek 鲸鱼娘',
+          draggable: false,
+        }),
+      ),
+      h('button', {
+        className: 'wp-live2d-config',
+        type: 'button',
+        title: '导入 / 管理 Live2D 模型',
+        'aria-label': '打开 Live2D 模型设置',
+        onPointerDown: (e) => { e.stopPropagation() },
+        onClick: (e) => {
+          e.stopPropagation()
+          setLive2dOpen(true)
+        },
+      }, '⚙️'),
       h('div', { className: 'wp-pager' },
         Array.from({ length: modeCount }, (_, i) =>
           h('span', { key: i, className: `wp-pager-dot${i === mode ? ' wp-pager-on' : ''}` })
@@ -1127,6 +1326,121 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
               h('span', { className: 'wp-summary-value', 'data-summary-field': 'cost' }, `¥${summaryDialog.totalCost.toFixed(2)}`),
             ),
             h('div', { className: 'wp-summary-note' }, '按 DeepSeek 官方价格估算，实际以账单为准'),
+          ),
+        ),
+      ),
+      document.body,
+    ),
+    live2dOpen && createPortal(
+      h('div', {
+        className: 'wp-live2d-backdrop',
+        onClick: () => setLive2dOpen(false),
+      },
+        h('div', { className: 'wp-live2d-dialog', onClick: (e): void => e.stopPropagation() },
+          h('div', { className: 'wp-live2d-header' },
+            h('span', { className: 'wp-live2d-title' }, 'Live2D 模型'),
+            h('button', {
+              className: 'wp-live2d-close',
+              type: 'button',
+              title: '关闭',
+              'aria-label': '关闭 Live2D 设置',
+              onClick: () => setLive2dOpen(false),
+            }, '×'),
+          ),
+          h('div', { className: 'wp-live2d-body' },
+            h('div', { className: 'wp-live2d-status', 'data-live2d-status': live2d.phase },
+              live2d.phase === 'off' && '当前使用默认鲸鱼娘（未导入 Live2D）',
+              live2d.phase === 'loading' && '正在加载模型…',
+              live2d.phase === 'ready' && `已启用：${live2d.name ?? '模型'}`,
+              live2d.phase === 'error' && `加载失败：${live2d.error ?? '未知错误'}`,
+            ),
+            h('div', { className: 'wp-live2d-section' },
+              h('div', { className: 'wp-live2d-label' }, '导入 ZIP（.zip，含 model3.json 与资源）'),
+              h('input', {
+                ref: live2dFileRef,
+                type: 'file',
+                accept: '.zip,application/zip',
+                className: 'wp-live2d-file',
+                onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+                  const file = e.target.files?.[0]
+                  if (file !== undefined && file !== null) void handleZipImport(file)
+                  e.target.value = ''
+                },
+              }),
+            ),
+            h('div', { className: 'wp-live2d-section' },
+              h('div', { className: 'wp-live2d-label' }, '或从 URL 导入（.model3.json，服务器需允许 CORS）'),
+              h('div', { className: 'wp-live2d-urlrow' },
+                h('input', {
+                  className: 'wp-live2d-url',
+                  type: 'url',
+                  placeholder: 'https://…/xxx.model3.json',
+                  value: live2dUrl,
+                  onChange: (e: React.ChangeEvent<HTMLInputElement>) => setLive2dUrl(e.target.value),
+                }),
+                h('button', {
+                  className: 'wp-live2d-action',
+                  type: 'button',
+                  disabled: live2dUrl.trim() === '' || live2d.phase === 'loading',
+                  onClick: () => void handleUrlImport(),
+                }, '导入'),
+              ),
+            ),
+            live2d.phase === 'ready' && (
+              h('div', { className: 'wp-live2d-section' },
+                h('div', { className: 'wp-live2d-label' }, '互动：移动鼠标可控制视线，点击模型会播放命中动作'),
+                h('div', { className: 'wp-live2d-controls' },
+                  h('button', {
+                    className: 'wp-live2d-action',
+                    type: 'button',
+                    onClick: () => void live2dHandleRef.current?.playMotion(),
+                  }, '播放动作'),
+                  h('button', {
+                    className: 'wp-live2d-action wp-live2d-secondary',
+                    type: 'button',
+                    disabled: live2dExprCount === 0,
+                    title: live2dExprCount === 0 ? '当前模型未定义表情' : '随机切换一个表情',
+                    onClick: () => void live2dHandleRef.current?.setExpression(),
+                  }, '随机表情'),
+                ),
+                live2dExprCount === 0 && (
+                  h('div', { className: 'wp-live2d-hint' }, '当前模型未定义表情，随机表情不可用')
+                ),
+              )
+            ),
+            h('div', { className: 'wp-live2d-section' },
+              h('div', { className: 'wp-live2d-label' }, `宠物大小（当前 ${Math.round(petScale * 100)}%）`),
+              h('div', { className: 'wp-live2d-scalerow' },
+                h('input', {
+                  className: 'wp-live2d-scale',
+                  type: 'range',
+                  min: '0.5',
+                  max: '2',
+                  step: '0.05',
+                  value: String(petScale),
+                  onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+                    const next = Number(e.target.value)
+                    if (Number.isFinite(next)) updatePetScale(next)
+                  },
+                }),
+                h('button', {
+                  className: 'wp-live2d-action wp-live2d-secondary',
+                  type: 'button',
+                  disabled: Math.abs(petScale - 1) < 0.0001,
+                  onClick: () => updatePetScale(1),
+                }, '恢复默认'),
+              ),
+              h('div', { className: 'wp-live2d-hint' }, '仅调整宠物模型大小，不改变气泡与对话框'),
+            ),
+            live2d.phase !== 'off' && (
+              h('div', { className: 'wp-live2d-section' },
+                h('button', {
+                  className: 'wp-live2d-remove',
+                  type: 'button',
+                  onClick: () => void handleRemoveModel(),
+                }, '移除模型，恢复默认鲸鱼娘'),
+              )
+            ),
           ),
         ),
       ),

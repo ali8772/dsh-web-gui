@@ -43,6 +43,18 @@ Remove localStorage key `dsh-whale-pet:pos` and refresh.
 
 Restart the web profile, hard-refresh the browser, verify health, and inspect the resolved profile dependency.
 
+## Live2D does not render after import
+
+1. Check the settings dialog status: import, Core loading, or renderer errors are shown there.
+2. Confirm the ZIP contains one `.model3.json` and all referenced files (`.moc3`, textures, physics, motions), and that entries are not duplicate or path-escaped.
+3. For URL import, the server must allow browser CORS on the JSON and all assets; otherwise fetches are blocked.
+4. Headless/software environments without WebGL keep the default PNG; a GPU-enabled browser is required for Live2D rendering.
+5. Clicking the model plays hit-area motions (`TapBody` by default); small models may not declare hit areas.
+
+## Live2D model disappears after refresh
+
+A saved model restores from IndexedDB. Clear browser storage for the site or use "移除模型" if a stale record blocks recovery; importing again replaces the record atomically.
+
 ## Safe issue reports
 
 Include versions, OS/browser, reproduction steps, sanitized endpoint status, and errors. Remove credentials, session text, financial values, usernames, and personal paths.

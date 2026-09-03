@@ -5,7 +5,8 @@
 1. Move changelog entries from Unreleased and set the release date.
 2. Synchronize `package.json`, `dsh.plugin.json`, and host health version.
 3. Confirm `cordis.patch.yml` inserts `dsh-whale-pet` exactly once.
-4. Run a secret/path scan and verify ignored local E2Es, screenshots, sessions, credentials, and Windows intermediates are not tracked.
+4. Verify vendor/local runtime checksum matches `ASSET_NOTICE.md` and its license is current.
+5. Run a secret/path scan and verify ignored local E2Es, screenshots, sessions, credentials, local model fixtures, and Windows intermediates are not tracked.
 5. Install and validate:
 
 ```sh
@@ -27,11 +28,11 @@ The tarball must contain only runtime host/client bundles, manifests, bundle pat
 
 ## Smoke test
 
-Install the generated artifact with the documented DSH command in a disposable profile. Restart, refresh, and test APIs, rendering, first balance baseline, later balance decrease, top-up handling, tasks, navigation, drag persistence, and themes. Remove it afterward.
+Install the generated artifact with the documented DSH command in a disposable profile. Restart, refresh, and test APIs, rendering, first balance baseline, later balance decrease, top-up handling, tasks, navigation, drag persistence, themes, Live2D ZIP import/URL import, pointer focus, click motion, refresh restore, and removal fallback. Remove it afterward.
 
 ## GitHub release
 
-Create and push the version tag (for this fix, `v0.2.2`). GitHub Actions builds from a clean checkout, runs tests, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
+Create and push the version tag (for this fix, `v0.4.0`). GitHub Actions builds from a clean checkout, runs tests, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
 
 ## Rollback
 

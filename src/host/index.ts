@@ -19,6 +19,8 @@
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage } from 'node:http'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import {
   aggregateSessionSpend,
   dshHome,
@@ -30,10 +32,14 @@ import { observeBalanceSpend } from './balance-spend.ts'
 import { fetchOpenCodeGoUsage } from './opencode.ts'
 import { progressForSession, sessionSummary } from './tasks.ts'
 
+/** Live2D 浏览器资产：与宿主 index.js 同目录，由 DSH 本地路由提供。 */
+const LIVE2D_CHUNK_PATH = fileURLToPath(new URL('./live2d.js', import.meta.url))
+const CUBISM_CORE_PATH = fileURLToPath(new URL('./live2dcubismcore.min.js', import.meta.url))
+
 export const name = 'dsh-whale-pet'
 export const inject = ['credentials', 'webServer']
 
-const VERSION = '0.3.0'
+const VERSION = '0.4.0'
 
 const HEALTH_PATH = '/api/whale-pet/health'
 const STATE_PATH = '/api/whale-pet/state'
@@ -328,5 +334,50 @@ export function apply(ctx: Context): void {
       },
     }),
     'dsh-whale-pet: opencode-go route',
+  )
+
+  // Live2D 动态 chunk（pixi + 渲染器，仅配置模型后浏览器动态加载）。
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: '/dsh-whale-pet-live2d.js',
+      handler: (_req, res) => {
+        try {
+          const code = readFileSync(LIVE2D_CHUNK_PATH, 'utf8')
+          res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(code)
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: live2d chunk missing')
+          ctx.logger?.warn?.(error)
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('live2d chunk not found')
+        }
+      },
+    }),
+    'dsh-whale-pet: live2d chunk route',
+  )
+
+  // 官方 Cubism Core 的本地副本。必须先于上面的 ESM chunk 执行，且不访问 CDN。
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: '/dsh-whale-pet-live2dcubismcore.min.js',
+      handler: (_req, res) => {
+        try {
+          const code = readFileSync(CUBISM_CORE_PATH, 'utf8')
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'public, max-age=86400, immutable',
+          })
+          res.end(code)
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: Cubism Core runtime missing')
+          ctx.logger?.warn?.(error)
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('Cubism Core runtime not found')
+        }
+      },
+    }),
+    'dsh-whale-pet: Cubism Core route',
   )
 }
