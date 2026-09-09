@@ -4,13 +4,27 @@
 
 - DeepSeek Harness with the `web` profile.
 - Node.js 24+ and `pnpm` on `PATH`.
-- A trusted `dsh-whale-pet-0.4.1.tgz` release artifact.
+- Either a trusted `dsh-whale-pet-<version>.tgz` actually published on GitHub Releases, or a trusted source checkout if testing `main`.
 
-## Install
+## Install a release
+
+Download the artifact and checksum shown on the [GitHub Releases](https://github.com/ali8772/dsh-web-gui/releases) page; do not infer artifact availability from the version in `package.json`. Tagged releases currently predate the private-route and companion-authentication hardening on `main`, so keep them confined to a trusted loopback environment.
 
 ```sh
+dsh plugin --profile web add ./dsh-whale-pet-<version>.tgz
+```
+
+## Test current `main`
+
+The security/pairing/performance work available since commit [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387) is on `main` but has no matching release tag yet. From a trusted checkout:
+
+```sh
+npm ci
+npm run pack:plugin
 dsh plugin --profile web add ./dsh-whale-pet-0.4.1.tgz
 ```
+
+The generated filename follows the current package version; it is a locally built artifact, not an official GitHub Release.
 
 Restart the running `dsh web` process because bundle membership changes at profile startup, then refresh the browser. Do not manually insert a second `dsh-whale-pet` row into the profile patch.
 
@@ -44,7 +58,7 @@ curl http://127.0.0.1:3080/api/whale-pet/health
 curl -i http://127.0.0.1:3080/api/whale-pet/state # expected 401 without browser auth
 ```
 
-Health must report `dsh-whale-pet`, `0.4.1`, and `ok: true`; the unauthenticated private request must not expose data.
+Health must report `dsh-whale-pet`, the version of the artifact you installed (current `main` reports `0.4.1`), and `ok: true`; the unauthenticated private request must not expose data.
 
 ## Upgrade
 

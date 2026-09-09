@@ -3,6 +3,8 @@
 DeepSeek Whale-chan 的 PowerShell 5.1 + WPF 实验性桌面伴侣，显示余额、今日消费和近 7 天消费，并提供漂浮、倾斜、眨眼、尾巴及呆毛动画。
 
 > 这是由单张立绘切片与叠层动画实现的 “Live2D 风格”效果，并非 Cubism Live2D 模型。
+>
+> 配对认证支持从 GitHub `main` 提交 [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387) 起提供，尚未对应到新的正式 Release；请从可信源码使用本目录，并与同一版本的 Web 插件配套。
 
 ## 获取与目录
 

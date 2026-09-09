@@ -2,6 +2,8 @@
 
 用 Rust 重建 dsh-whale-pet Windows 端的实验项目（独立服务，不集成 DSH bundle）。
 
+> Credential Manager 配对支持从 GitHub `main` 提交 [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387) 起提供，尚未对应到新的正式 Release；请从可信源码构建，并与同一版本的 Web 插件配套。
+
 ## 为什么
 
 原 Windows 伴侣是 PowerShell 5.1 + WPF 脚本（`../windows/`），启动慢、依赖系统 PowerShell、

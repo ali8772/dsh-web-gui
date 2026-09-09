@@ -8,7 +8,11 @@
 
 > 截图使用固定示例数据（余额 ¥88.88），不包含真实账户信息。
 
-## v0.4.1 功能
+## 当前源码功能（`main`）
+
+> npm 包版本目前仍为 `0.4.1`；以下认证、桌面伴侣配对、性能、Worker 与无障碍改进从提交 [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387) 起进入 GitHub `main`，但尚未创建对应 Release/tag。需要这些改进时可从可信源码构建，正式发布前请以 Releases 页面提供的版本和校验值为准。
+>
+> **安全提示：** 已打 tag 的旧版本不包含本节的私有路由认证和桌面伴侣 Bearer 防护；在正式安全版本发布前，不要把旧版数据路由暴露到非可信网络。
 
 ### Live2D 模型导入与交互
 
@@ -58,11 +62,15 @@
 
 要求：Node.js 24+、可运行的 DSH CLI，且 `pnpm` 在 `PATH` 中。
 
-从 [GitHub Releases](https://github.com/ali8772/dsh-web-gui/releases) 下载 `dsh-whale-pet-0.4.1.tgz`：
+### Release 安装
+
+从 [GitHub Releases](https://github.com/ali8772/dsh-web-gui/releases) 下载页面中实际提供的 `dsh-whale-pet-<version>.tgz`，核对校验值后安装：
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.4.1.tgz
+dsh plugin --profile web add ./dsh-whale-pet-<version>.tgz
 ```
+
+当前 GitHub `main` 比已打 tag 的版本更新；不要假设仓库内的 `0.4.1` 包已经出现在 Releases。若需测试当前源码，可在可信检出中运行 `npm ci && npm run pack:plugin`，再安装生成的 `.tgz`。
 
 重启 `dsh web`，再刷新浏览器。不要在 profile patch 中重复插入插件；安装包自带 bundle patch。升级、卸载与验证见 [安装文档](docs/INSTALL.md)。
 

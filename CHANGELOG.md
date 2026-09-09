@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+> The changes in this section are available from GitHub `main` starting at commit [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387). They have not yet been assigned a new release version or tag; the package metadata still reports `0.4.1`.
+
 ### Fixed
 - Require Node.js 24 consistently because the host session reader uses Node's Zstandard API.
 - Recover newline-complete task and usage events from a torn final Zstandard session-log frame.
@@ -30,7 +32,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Never place companion plaintext tokens in query parameters, cookies, logs, or browser persistence; revoke grants independently from settings.
 - Document the narrowly allowed upstream `pixi-live2d-display -> gh-pages` audit advisory without applying a destructive renderer downgrade.
 
-## [0.4.1] - 2026-09-03
+## 0.4.1 source milestone — 2026-09-03 (not tagged)
 
 ### Fixed
 - Restoring the default Whale-chan and importing Live2D again no longer reuses a canvas whose WebGL context PIXI destroyed. Every renderer now owns a fresh canvas that is removed with the renderer, fixing `Invalid value of \`0\` passed to \`checkMaxIfStatementsInShader\``.
@@ -42,7 +44,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Live2D rendering resolution now scales with the pet size (`dpr × scale`) with no artificial cap, so zooming in keeps the model sharp at any device-pixel ratio.
 - The Live2D model renders exactly at the canvas center and the scale transform is merged with the centering translate, eliminating any perceived horizontal drift.
 
-## [0.4.0] - 2026-09-03
+## 0.4.0 source milestone — 2026-09-03 (not tagged)
 
 ### Added
 - Live2D model import that replaces the default Whale-chan: ZIP (`.model3.json`) and URL import with CORS-enabled servers, persisted to the browser's IndexedDB and restored on refresh.
@@ -60,7 +62,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Imported Live2D models never leave the browser; URL import fetches only user-provided model servers.
 - Local live2d E2E tests, local fixture models, and real-account screenshots remain excluded from Git and release packages.
 
-## [0.3.0] - 2026-09-03
+## 0.3.0 source milestone — 2026-09-03 (not tagged)
 
 ### Added
 - OpenCode Go quota page showing used percentage, remaining quota, and reset time for the rolling 5-hour, 7-day, and monthly windows. The host reads the official gateway `https://opencode.ai/zen/go/v1/usage` with the CLI login file as a transparent credential source; the API key never leaves the host.
@@ -115,10 +117,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Added
 - Initial draggable pet with balance, today spend, seven-day spend, and local estimation.
 
-[Unreleased]: https://github.com/ali8772/dsh-web-gui/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/ali8772/dsh-web-gui/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/ali8772/dsh-web-gui/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.2...v0.3.0
+[Unreleased]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.2...HEAD
 [0.2.2]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ali8772/dsh-web-gui/releases/tag/v0.2.0

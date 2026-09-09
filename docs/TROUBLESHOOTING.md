@@ -52,7 +52,7 @@ Remove localStorage key `dsh-whale-pet:pos` and refresh.
 
 ## Upgrade still reports an old version
 
-Restart the web profile, hard-refresh the browser, verify health, and inspect the resolved profile dependency.
+Restart the web profile, hard-refresh the browser, verify health, and inspect the resolved profile dependency. GitHub `main` may be ahead of tagged Releases while retaining the same package version during development; compare the installed source/commit and do not infer feature availability from `0.4.1` alone.
 
 ## Live2D does not render after import
 

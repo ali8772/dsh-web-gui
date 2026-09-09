@@ -34,9 +34,13 @@ The tarball must contain only runtime host/client bundles (including `lib/live2d
 
 Install the generated artifact with the documented DSH command in a disposable profile. Restart and refresh the existing DSH Web URL; do not validate against a replacement server. Test browser authentication rejection, malformed/oversized requests, balance baseline/decrease/top-up handling, task batch isolation, navigation, keyboard task activation, modal focus/Escape behavior, ARIA announcements, reduced motion, companion issue/use/revoke for both clients, themes, ZIP Worker import, bounded URL import, hidden-page ticker pause, pointer focus, click motion, refresh restore, and removal fallback. Remove it afterward.
 
+## Current release status
+
+Commit [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387) is published on `main`, but the authentication, companion-pairing, performance, Worker, accessibility, and CI changes remain in the changelog's **Unreleased** section. The package still reports `0.4.1`, and there is no `v0.4.1` Git tag. Do not advertise the locally generated `dsh-whale-pet-0.4.1.tgz` as a GitHub Release.
+
 ## GitHub release
 
-Create and push the version tag for the intended release (for this fix, `v0.4.1`). GitHub Actions builds from a clean checkout, runs tests, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
+Choose the intended next version, move the Unreleased entries into a dated section, and synchronize `package.json`, `package-lock.json`, `dsh.plugin.json`, the host health version, README examples, and installation docs. Commit those release-preparation changes, then create and push the matching `v<version>` tag. GitHub Actions builds from that clean tagged checkout, runs tests, checks package contents, creates the tarball and SHA-256 file, and uploads them to the GitHub Release. Do not move tags or silently replace artifacts.
 
 ## Rollback
 

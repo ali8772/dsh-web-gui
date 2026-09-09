@@ -8,7 +8,11 @@
 
 > The screenshot uses fixed example data (balance ¥88.88) and contains no real account information.
 
-## v0.4.1 highlights
+## Current source highlights (`main`)
+
+> The npm package version remains `0.4.1`. The authentication, desktop-pairing, performance, Worker, and accessibility changes below have been on GitHub `main` since commit [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387), but no matching Release/tag has been created yet. Build from trusted source if you need them now, and use the version and checksums published on the Releases page for formal installs.
+>
+> **Security note:** older tagged versions do not contain the private-route authentication and companion Bearer protections described below. Do not expose their data routes to an untrusted network while awaiting a formal security release.
 
 ### Live2D model import and interaction
 
@@ -58,11 +62,15 @@
 
 Requirements: Node.js 24+, a working DSH CLI, and `pnpm` on `PATH`.
 
-Download `dsh-whale-pet-0.4.1.tgz` from [Releases](https://github.com/ali8772/dsh-web-gui/releases):
+### Release installation
+
+Download the `dsh-whale-pet-<version>.tgz` actually listed on [GitHub Releases](https://github.com/ali8772/dsh-web-gui/releases), verify its checksum, then install it:
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.4.1.tgz
+dsh plugin --profile web add ./dsh-whale-pet-<version>.tgz
 ```
+
+GitHub `main` is currently ahead of the tagged releases; do not assume the repository's `0.4.1` package has been published on Releases. To test current source, run `npm ci && npm run pack:plugin` in a trusted checkout and install the generated `.tgz`.
 
 Restart `dsh web`, then refresh the browser. Do not add a second insertion to the profile patch; the packaged bundle activates itself. See [docs/INSTALL.md](docs/INSTALL.md) for upgrades, removal, and verification.
 

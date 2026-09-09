@@ -37,6 +37,10 @@ Build scripts must be portable. Do not add machine-specific dependency paths. Lo
 - Exact `npm pack --dry-run` contents, bundle budgets, and canonical production audit policy.
 - Chinese and English docs for user-visible changes.
 
+## Version and release documentation
+
+A merge to `main` is not a release. Keep new work under `CHANGELOG.md` → **Unreleased** until a version is deliberately selected. Before tagging, synchronize package/lock/plugin/health versions and all README/install examples. Only claim an artifact is downloadable after the matching GitHub Release and checksum exist.
+
 ## Pull requests
 
 Explain motivation, behavior, tests, privacy/security impact, and package impact. Add sanitized visuals for UI changes. Contributions are accepted under the MIT license.
