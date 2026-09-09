@@ -18,34 +18,54 @@
 
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import type { IncomingMessage } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   aggregateSessionSpend,
   dshHome,
-  listSessionLogs,
   spendWindowDays,
   sumWindow,
 } from './sessions.ts'
 import { observeBalanceSpend } from './balance-spend.ts'
 import { fetchOpenCodeGoUsage } from './opencode.ts'
 import { progressForSession, sessionSummary } from './tasks.ts'
+import { createSessionProjection } from './session-projection.ts'
+import {
+  createCompanionGrants,
+  isCompanionLoopback,
+  isTrustedCompanionRequest,
+} from './companion-grants.ts'
+import {
+  MAX_REQUEST_BODY_BYTES,
+  MAX_SESSION_ID_LENGTH,
+  MAX_TASK_IDS,
+  WHALE_PET_PATHS,
+} from '../shared/contract.ts'
 
 /** Live2D 浏览器资产：与宿主 index.js 同目录，由 DSH 本地路由提供。 */
 const LIVE2D_CHUNK_PATH = fileURLToPath(new URL('./live2d.js', import.meta.url))
+const LIVE2D_ZIP_WORKER_PATH = fileURLToPath(new URL('./live2d-zip-worker.js', import.meta.url))
 const CUBISM_CORE_PATH = fileURLToPath(new URL('./live2dcubismcore.min.js', import.meta.url))
+const IMMUTABLE_JS_HEADERS = {
+  'content-type': 'application/javascript; charset=utf-8',
+  'cache-control': 'public, max-age=31536000, immutable',
+}
 
 export const name = 'dsh-whale-pet'
-export const inject = ['credentials', 'webServer']
+export const inject = ['credentials', 'webServer', 'connection']
 
-const VERSION = '0.4.0'
+const VERSION = '0.4.1'
 
-const HEALTH_PATH = '/api/whale-pet/health'
-const STATE_PATH = '/api/whale-pet/state'
-const TASKS_PATH = '/api/whale-pet/tasks'
-const TASK_SUMMARY_PATH = '/api/whale-pet/task-summary'
-const OPENCODE_GO_PATH = '/api/whale-pet/opencode-go'
+const {
+  health: HEALTH_PATH,
+  state: STATE_PATH,
+  tasks: TASKS_PATH,
+  taskSummary: TASK_SUMMARY_PATH,
+  openCodeGo: OPENCODE_GO_PATH,
+} = WHALE_PET_PATHS
 
 const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 /** 与 llm-deepseek 适配器对齐的环境变量覆盖。 */
@@ -100,20 +120,76 @@ function sendJson(res: { writeHead: (status: number, headers: Record<string, str
   res.end(JSON.stringify(body))
 }
 
-/** 读取 JSON 请求体；空体或坏体返回 `{}`。 */
+/** 让私有 Web 路由复用 DSH 的 Host/Origin fence 与浏览器会话认证。 */
+function rejectPrivateRequest(
+  ctx: Context,
+  req: IncomingMessage,
+  res: { writeHead: (status: number, headers: Record<string, string>) => void; end: (body: string) => void },
+): boolean {
+  const status = ctx.connection.requestRejection(req)
+  if (status === undefined) return false
+  res.writeHead(status, {
+    'cache-control': 'no-store',
+    'content-type': 'text/plain; charset=utf-8',
+  })
+  res.end(status === 401 ? 'unauthorized' : 'forbidden')
+  return true
+}
+
+class RequestBodyError extends Error {
+  constructor(readonly status: 400 | 413, readonly code: 'bad-json' | 'payload-too-large', message: string) {
+    super(message)
+  }
+}
+
+/** 读取一个有界 JSON object；格式与大小错误由路由映射为稳定 400/413。 */
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
+  let size = 0
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Buffer))
-    if (chunks.reduce((sum, c) => sum + c.length, 0) > 1024 * 1024) break
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Buffer)
+    size += bytes.length
+    if (size > MAX_REQUEST_BODY_BYTES) {
+      throw new RequestBodyError(413, 'payload-too-large', 'request body exceeds 64 KiB')
+    }
+    chunks.push(bytes)
   }
   if (chunks.length === 0) return {}
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-    return parsed !== null && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+    parsed = JSON.parse(Buffer.concat(chunks, size).toString('utf8')) as unknown
   } catch {
-    return {}
+    throw new RequestBodyError(400, 'bad-json', 'request body must be valid JSON')
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new RequestBodyError(400, 'bad-json', 'request body must be a JSON object')
+  }
+  return parsed as Record<string, unknown>
+}
+
+function sendRequestError(
+  res: { writeHead: (status: number, headers: Record<string, string>) => void; end: (body: string) => void },
+  error: unknown,
+): boolean {
+  if (!(error instanceof RequestBodyError)) return false
+  sendJson(res, error.status, { ok: false, error: error.code, message: error.message })
+  return true
+}
+
+const INVALID_TASK_IDS = `ids must contain at most ${MAX_TASK_IDS} unique session ids of at most ${MAX_SESSION_ID_LENGTH} characters`
+
+function parseTaskIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const valueId of value) {
+    if (typeof valueId !== 'string' || valueId.length === 0 || valueId.length > MAX_SESSION_ID_LENGTH) return undefined
+    if (seen.has(valueId)) continue
+    seen.add(valueId)
+    ids.push(valueId)
+    if (ids.length > MAX_TASK_IDS) return undefined
+  }
+  return ids
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -228,6 +304,9 @@ function computeSpend(ctx: Context, balance: BalanceSnapshot | null, nowMs = Dat
 
 /** Cordis 插件体。 */
 export function apply(ctx: Context): void {
+  const companionGrants = createCompanionGrants(ctx.credentials)
+  const sessions = createSessionProjection()
+
   ctx.effect(
     () => ctx.webServer.register({
       kind: 'exact',
@@ -243,7 +322,8 @@ export function apply(ctx: Context): void {
     () => ctx.webServer.register({
       kind: 'exact',
       path: STATE_PATH,
-      handler: async (_req, res) => {
+      handler: async (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
         try {
           // 消费依赖本次余额观察，必须顺序执行，不能与余额请求并行。
           const balance = await fetchBalance(ctx)
@@ -257,7 +337,7 @@ export function apply(ctx: Context): void {
         } catch (error) {
           ctx.logger?.warn?.('dsh-whale-pet: state route failed')
           ctx.logger?.warn?.(error)
-          sendJson(res, 500, { ok: false, error: 'internal', message: error instanceof Error ? error.message : String(error) })
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
     }),
@@ -270,19 +350,31 @@ export function apply(ctx: Context): void {
       kind: 'exact',
       path: TASKS_PATH,
       handler: async (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
         try {
           const body = await readJsonBody(req)
-          const rawIds = Array.isArray(body.ids) ? body.ids : []
-          const ids = rawIds.filter((id): id is string => typeof id === 'string')
+          const ids = parseTaskIds(body.ids)
+          if (ids === undefined) {
+            sendJson(res, 400, { ok: false, error: 'bad-request', message: INVALID_TASK_IDS })
+            return
+          }
           const home = resolveDshHome(ctx)
-          const logs = listSessionLogs(home)
-          const index = new Map(logs.map((meta) => [meta.id, meta]))
-          const tasks = ids.map((id) => progressForSession(index, id))
+          const index = sessions.index(home)
+          const tasks = ids.map((id) => {
+            try {
+              return progressForSession(index, id)
+            } catch (error) {
+              ctx.logger?.warn?.(`dsh-whale-pet: session progress failed for ${id}`)
+              ctx.logger?.warn?.(error)
+              return { id, found: false, errorCode: 'session-log-corrupt' as const }
+            }
+          })
           sendJson(res, 200, { ok: true, fetchedAt: Date.now(), tasks })
         } catch (error) {
+          if (sendRequestError(res, error)) return
           ctx.logger?.warn?.('dsh-whale-pet: tasks route failed')
           ctx.logger?.warn?.(error)
-          sendJson(res, 500, { ok: false, error: 'internal', message: error instanceof Error ? error.message : String(error) })
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
     }),
@@ -295,22 +387,23 @@ export function apply(ctx: Context): void {
       kind: 'exact',
       path: TASK_SUMMARY_PATH,
       handler: async (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
         try {
           const body = await readJsonBody(req)
-          const id = typeof body.id === 'string' ? body.id : ''
+          const id = typeof body.id === 'string' && body.id.length > 0 && body.id.length <= MAX_SESSION_ID_LENGTH ? body.id : ''
           if (id === '') {
-            sendJson(res, 400, { ok: false, error: 'bad-request', message: 'id is required' })
+            sendJson(res, 400, { ok: false, error: 'bad-request', message: `id must be a non-empty session id of at most ${MAX_SESSION_ID_LENGTH} characters` })
             return
           }
           const home = resolveDshHome(ctx)
-          const logs = listSessionLogs(home)
-          const index = new Map(logs.map((meta) => [meta.id, meta]))
+          const index = sessions.index(home)
           const summary = sessionSummary(index, id)
           sendJson(res, 200, { ok: true, fetchedAt: Date.now(), summary })
         } catch (error) {
+          if (sendRequestError(res, error)) return
           ctx.logger?.warn?.('dsh-whale-pet: task-summary route failed')
           ctx.logger?.warn?.(error)
-          sendJson(res, 500, { ok: false, error: 'internal', message: error instanceof Error ? error.message : String(error) })
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
     }),
@@ -322,29 +415,246 @@ export function apply(ctx: Context): void {
     () => ctx.webServer.register({
       kind: 'exact',
       path: OPENCODE_GO_PATH,
-      handler: async (_req, res) => {
+      handler: async (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
         try {
           const usage = await fetchOpenCodeGoUsage()
           sendJson(res, 200, { ok: true, fetchedAt: usage.fetchedAt, usage })
         } catch (error) {
           ctx.logger?.warn?.('dsh-whale-pet: opencode-go route failed')
           ctx.logger?.warn?.(error)
-          sendJson(res, 500, { ok: false, error: 'internal', message: error instanceof Error ? error.message : String(error) })
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
     }),
     'dsh-whale-pet: opencode-go route',
   )
 
+  // 已认证浏览器管理桌面伴侣 grants。令牌明文只在 issue 响应出现一次。
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.companions,
+      handler: async (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          sendJson(res, 200, { ok: true, grants: await companionGrants.list() })
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: companion list failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: companion list route',
+  )
+
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.companionIssue,
+      handler: async (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const label = typeof body.label === 'string' ? body.label : ''
+          const issued = await companionGrants.issue(label)
+          sendJson(res, 201, { ok: true, ...issued })
+        } catch (error) {
+          if (sendRequestError(res, error)) return
+          if (error instanceof Error && error.message === 'companion label must be 1-80 characters') {
+            sendJson(res, 400, { ok: false, error: 'bad-request', message: error.message })
+            return
+          }
+          ctx.logger?.warn?.('dsh-whale-pet: companion issue failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: companion issue route',
+  )
+
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.companionRevoke,
+      handler: async (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const id = typeof body.id === 'string' ? body.id : ''
+          if (id === '') {
+            sendJson(res, 400, { ok: false, error: 'bad-request', message: 'id is required' })
+            return
+          }
+          sendJson(res, 200, { ok: true, revoked: await companionGrants.revoke(id) })
+        } catch (error) {
+          if (sendRequestError(res, error)) return
+          ctx.logger?.warn?.('dsh-whale-pet: companion revoke failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: companion revoke route',
+  )
+
+  const rejectCompanion = async (req: IncomingMessage, res: Parameters<typeof sendJson>[0]): Promise<boolean> => {
+    if (!isCompanionLoopback(req.socket.remoteAddress) || !isTrustedCompanionRequest(req.headers)) {
+      sendJson(res, 403, { ok: false, error: 'forbidden', message: 'forbidden' })
+      return true
+    }
+    try {
+      const authorization = req.headers.authorization
+      if (await companionGrants.authenticate(req.socket.remoteAddress, authorization) !== null) return false
+      sendJson(res, 401, { ok: false, error: 'unauthorized', message: 'unauthorized' })
+      return true
+    } catch (error) {
+      ctx.logger?.warn?.('dsh-whale-pet: companion credential record failed')
+      ctx.logger?.warn?.(error)
+      sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+      return true
+    }
+  }
+
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.companionState,
+      handler: async (req, res) => {
+        if (await rejectCompanion(req, res)) return
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          const balance = await fetchBalance(ctx)
+          const spend = computeSpend(ctx, balance)
+          sendJson(res, 200, { ok: true, fetchedAt: Date.now(), balance, spend })
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: companion state failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: companion state route',
+  )
+
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.companionTasks,
+      handler: async (req, res) => {
+        if (await rejectCompanion(req, res)) return
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const ids = parseTaskIds(body.ids)
+          if (ids === undefined) {
+            sendJson(res, 400, { ok: false, error: 'bad-request', message: INVALID_TASK_IDS })
+            return
+          }
+          const index = sessions.index(resolveDshHome(ctx))
+          const tasks = ids.map((id) => {
+            try {
+              return progressForSession(index, id)
+            } catch (error) {
+              ctx.logger?.warn?.(`dsh-whale-pet: companion session progress failed for ${id}`)
+              ctx.logger?.warn?.(error)
+              return { id, found: false, errorCode: 'session-log-corrupt' as const }
+            }
+          })
+          sendJson(res, 200, { ok: true, fetchedAt: Date.now(), tasks })
+        } catch (error) {
+          if (sendRequestError(res, error)) return
+          ctx.logger?.warn?.('dsh-whale-pet: companion tasks failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: companion tasks route',
+  )
+
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.companionTaskSummary,
+      handler: async (req, res) => {
+        if (await rejectCompanion(req, res)) return
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const id = typeof body.id === 'string' && body.id.length > 0 && body.id.length <= MAX_SESSION_ID_LENGTH ? body.id : ''
+          if (id === '') {
+            sendJson(res, 400, { ok: false, error: 'bad-request', message: `id must be a non-empty session id of at most ${MAX_SESSION_ID_LENGTH} characters` })
+            return
+          }
+          const index = sessions.index(resolveDshHome(ctx))
+          sendJson(res, 200, { ok: true, fetchedAt: Date.now(), summary: sessionSummary(index, id) })
+        } catch (error) {
+          if (sendRequestError(res, error)) return
+          ctx.logger?.warn?.('dsh-whale-pet: companion task summary failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: companion task summary route',
+  )
+
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.companionOpenCodeGo,
+      handler: async (req, res) => {
+        if (await rejectCompanion(req, res)) return
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          const usage = await fetchOpenCodeGoUsage()
+          sendJson(res, 200, { ok: true, fetchedAt: usage.fetchedAt, usage })
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: companion opencode-go failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: companion opencode-go route',
+  )
+
   // Live2D 动态 chunk（pixi + 渲染器，仅配置模型后浏览器动态加载）。
   ctx.effect(
     () => ctx.webServer.register({
       kind: 'exact',
-      path: '/dsh-whale-pet-live2d.js',
+      path: WHALE_PET_PATHS.live2d,
       handler: (_req, res) => {
         try {
           const code = readFileSync(LIVE2D_CHUNK_PATH, 'utf8')
-          res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' })
+          res.writeHead(200, IMMUTABLE_JS_HEADERS)
           res.end(code)
         } catch (error) {
           ctx.logger?.warn?.('dsh-whale-pet: live2d chunk missing')
@@ -357,18 +667,35 @@ export function apply(ctx: Context): void {
     'dsh-whale-pet: live2d chunk route',
   )
 
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: WHALE_PET_PATHS.live2dZipWorker,
+      handler: (_req, res) => {
+        try {
+          const code = readFileSync(LIVE2D_ZIP_WORKER_PATH, 'utf8')
+          res.writeHead(200, IMMUTABLE_JS_HEADERS)
+          res.end(code)
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: Live2D ZIP Worker missing')
+          ctx.logger?.warn?.(error)
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('Live2D ZIP Worker not found')
+        }
+      },
+    }),
+    'dsh-whale-pet: Live2D ZIP Worker route',
+  )
+
   // 官方 Cubism Core 的本地副本。必须先于上面的 ESM chunk 执行，且不访问 CDN。
   ctx.effect(
     () => ctx.webServer.register({
       kind: 'exact',
-      path: '/dsh-whale-pet-live2dcubismcore.min.js',
+      path: WHALE_PET_PATHS.cubismCore,
       handler: (_req, res) => {
         try {
           const code = readFileSync(CUBISM_CORE_PATH, 'utf8')
-          res.writeHead(200, {
-            'content-type': 'application/javascript; charset=utf-8',
-            'cache-control': 'public, max-age=86400, immutable',
-          })
+          res.writeHead(200, IMMUTABLE_JS_HEADERS)
           res.end(code)
         } catch (error) {
           ctx.logger?.warn?.('dsh-whale-pet: Cubism Core runtime missing')

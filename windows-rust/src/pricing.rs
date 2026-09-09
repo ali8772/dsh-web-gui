@@ -16,7 +16,11 @@ pub struct PriceUnit {
 
 impl Default for PriceUnit {
     fn default() -> Self {
-        Self { input: 0.0, cache_read: 0.0, output: 0.0 }
+        Self {
+            input: 0.0,
+            cache_read: 0.0,
+            output: 0.0,
+        }
     }
 }
 
@@ -49,22 +53,46 @@ pub static OFFICIAL_PRICING_POLICIES: LazyLock<Vec<PricePolicy>> = LazyLock::new
                 (
                     "deepseek-chat",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 2.0, cache_read: 0.5, output: 8.0 },
-                        usd: PriceUnit { input: 0.28, cache_read: 0.028, output: 0.42 },
+                        cny: PriceUnit {
+                            input: 2.0,
+                            cache_read: 0.5,
+                            output: 8.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.28,
+                            cache_read: 0.028,
+                            output: 0.42,
+                        },
                     },
                 ),
                 (
                     "deepseek-reasoner",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 4.0, cache_read: 1.0, output: 16.0 },
-                        usd: PriceUnit { input: 0.55, cache_read: 0.055, output: 1.68 },
+                        cny: PriceUnit {
+                            input: 4.0,
+                            cache_read: 1.0,
+                            output: 16.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.55,
+                            cache_read: 0.055,
+                            output: 1.68,
+                        },
                     },
                 ),
                 (
                     "*",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 2.0, cache_read: 0.5, output: 8.0 },
-                        usd: PriceUnit { input: 0.28, cache_read: 0.028, output: 0.42 },
+                        cny: PriceUnit {
+                            input: 2.0,
+                            cache_read: 0.5,
+                            output: 8.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.28,
+                            cache_read: 0.028,
+                            output: 0.42,
+                        },
                     },
                 ),
             ]),
@@ -78,22 +106,46 @@ pub static OFFICIAL_PRICING_POLICIES: LazyLock<Vec<PricePolicy>> = LazyLock::new
                 (
                     "deepseek-v4-flash",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 1.0, cache_read: 0.02, output: 2.0 },
-                        usd: PriceUnit { input: 0.14, cache_read: 0.0028, output: 0.28 },
+                        cny: PriceUnit {
+                            input: 1.0,
+                            cache_read: 0.02,
+                            output: 2.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.14,
+                            cache_read: 0.0028,
+                            output: 0.28,
+                        },
                     },
                 ),
                 (
                     "deepseek-v4-pro",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 3.0, cache_read: 0.025, output: 6.0 },
-                        usd: PriceUnit { input: 0.435, cache_read: 0.003625, output: 0.87 },
+                        cny: PriceUnit {
+                            input: 3.0,
+                            cache_read: 0.025,
+                            output: 6.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.435,
+                            cache_read: 0.003625,
+                            output: 0.87,
+                        },
                     },
                 ),
                 (
                     "*",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 1.0, cache_read: 0.02, output: 2.0 },
-                        usd: PriceUnit { input: 0.14, cache_read: 0.0028, output: 0.28 },
+                        cny: PriceUnit {
+                            input: 1.0,
+                            cache_read: 0.02,
+                            output: 2.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.14,
+                            cache_read: 0.0028,
+                            output: 0.28,
+                        },
                     },
                 ),
             ]),
@@ -108,22 +160,46 @@ pub static OFFICIAL_PRICING_POLICIES: LazyLock<Vec<PricePolicy>> = LazyLock::new
                 (
                     "deepseek-v4-flash",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 3.0, cache_read: 0.1, output: 9.0 },
-                        usd: PriceUnit { input: 0.44, cache_read: 0.014, output: 1.32 },
+                        cny: PriceUnit {
+                            input: 3.0,
+                            cache_read: 0.1,
+                            output: 9.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.44,
+                            cache_read: 0.014,
+                            output: 1.32,
+                        },
                     },
                 ),
                 (
                     "deepseek-v4-pro",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 9.0, cache_read: 0.3, output: 27.0 },
-                        usd: PriceUnit { input: 1.32, cache_read: 0.044, output: 3.96 },
+                        cny: PriceUnit {
+                            input: 9.0,
+                            cache_read: 0.3,
+                            output: 27.0,
+                        },
+                        usd: PriceUnit {
+                            input: 1.32,
+                            cache_read: 0.044,
+                            output: 3.96,
+                        },
                     },
                 ),
                 (
                     "*",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 3.0, cache_read: 0.1, output: 9.0 },
-                        usd: PriceUnit { input: 0.44, cache_read: 0.014, output: 1.32 },
+                        cny: PriceUnit {
+                            input: 3.0,
+                            cache_read: 0.1,
+                            output: 9.0,
+                        },
+                        usd: PriceUnit {
+                            input: 0.44,
+                            cache_read: 0.014,
+                            output: 1.32,
+                        },
                     },
                 ),
             ])),
@@ -131,22 +207,46 @@ pub static OFFICIAL_PRICING_POLICIES: LazyLock<Vec<PricePolicy>> = LazyLock::new
                 (
                     "deepseek-v4-flash",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 1.5, cache_read: 0.05, output: 4.5 },
-                        usd: PriceUnit { input: 0.22, cache_read: 0.007, output: 0.66 },
+                        cny: PriceUnit {
+                            input: 1.5,
+                            cache_read: 0.05,
+                            output: 4.5,
+                        },
+                        usd: PriceUnit {
+                            input: 0.22,
+                            cache_read: 0.007,
+                            output: 0.66,
+                        },
                     },
                 ),
                 (
                     "deepseek-v4-pro",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 4.5, cache_read: 0.15, output: 13.5 },
-                        usd: PriceUnit { input: 0.66, cache_read: 0.022, output: 1.98 },
+                        cny: PriceUnit {
+                            input: 4.5,
+                            cache_read: 0.15,
+                            output: 13.5,
+                        },
+                        usd: PriceUnit {
+                            input: 0.66,
+                            cache_read: 0.022,
+                            output: 1.98,
+                        },
                     },
                 ),
                 (
                     "*",
                     DualCurrencyUnit {
-                        cny: PriceUnit { input: 1.5, cache_read: 0.05, output: 4.5 },
-                        usd: PriceUnit { input: 0.22, cache_read: 0.007, output: 0.66 },
+                        cny: PriceUnit {
+                            input: 1.5,
+                            cache_read: 0.05,
+                            output: 4.5,
+                        },
+                        usd: PriceUnit {
+                            input: 0.22,
+                            cache_read: 0.007,
+                            output: 0.66,
+                        },
                     },
                 ),
             ])),
@@ -164,13 +264,16 @@ pub struct PriceAtResult {
     pub mode: &'static str,
 }
 
+#[derive(Default)]
 pub struct PriceCache {
     inner: HashMap<String, PriceAtResult>,
 }
 
 impl PriceCache {
     pub fn new() -> Self {
-        Self { inner: HashMap::new() }
+        Self {
+            inner: HashMap::new(),
+        }
     }
 
     pub fn lookup(&mut self, model: &str, time_ms: i64) -> PriceAtResult {
@@ -215,11 +318,19 @@ pub fn cost_of(usage: CostUsage, unit: PriceAtResult) -> CostBreakdown {
     let output_tokens = usage.output_tokens.unwrap_or(0);
     let cost = (input_tokens as f64 * unit.cny.input
         + cache_read_tokens as f64 * unit.cny.cache_read
-        + output_tokens as f64 * unit.cny.output) / 1_000_000.0;
+        + output_tokens as f64 * unit.cny.output)
+        / 1_000_000.0;
     let cost_usd = (input_tokens as f64 * unit.usd.input
         + cache_read_tokens as f64 * unit.usd.cache_read
-        + output_tokens as f64 * unit.usd.output) / 1_000_000.0;
-    CostBreakdown { input_tokens, cache_read_tokens, output_tokens, cost, cost_usd }
+        + output_tokens as f64 * unit.usd.output)
+        / 1_000_000.0;
+    CostBreakdown {
+        input_tokens,
+        cache_read_tokens,
+        output_tokens,
+        cost,
+        cost_usd,
+    }
 }
 
 pub fn is_peak(time_ms: i64, timezone: Option<&str>, windows: Option<&[(u32, u32)]>) -> bool {
@@ -229,7 +340,8 @@ pub fn is_peak(time_ms: i64, timezone: Option<&str>, windows: Option<&[(u32, u32
     if hour < 0 {
         return false;
     }
-    win.iter().any(|&(start, end)| hour >= start as i32 && hour < end as i32)
+    win.iter()
+        .any(|&(start, end)| hour >= start as i32 && hour < end as i32)
 }
 
 fn hour_in_timezone(time_ms: i64, timezone: &str) -> i32 {
@@ -259,10 +371,17 @@ pub struct PriceAtOptions<'a> {
 pub fn price_at(model: &str, time_ms: i64, opts: Option<PriceAtOptions<'_>>) -> PriceAtResult {
     let opts = opts.unwrap_or_default();
     let peak = is_peak(time_ms, opts.timezone, opts.peak_windows);
-    let policies: &[PricePolicy] = opts.policies.unwrap_or_else(|| OFFICIAL_PRICING_POLICIES.as_slice());
+    let policies: &[PricePolicy] = opts
+        .policies
+        .unwrap_or_else(|| OFFICIAL_PRICING_POLICIES.as_slice());
     let applicable: Vec<&PricePolicy> = policies
         .iter()
-        .filter(|p| time_ms >= chrono::DateTime::parse_from_rfc3339(p.since).map(|d| d.timestamp_millis()).unwrap_or(0))
+        .filter(|p| {
+            time_ms
+                >= chrono::DateTime::parse_from_rfc3339(p.since)
+                    .map(|d| d.timestamp_millis())
+                    .unwrap_or(0)
+        })
         .collect();
     let scope: Vec<&PricePolicy> = if !applicable.is_empty() {
         applicable
@@ -272,10 +391,15 @@ pub fn price_at(model: &str, time_ms: i64, opts: Option<PriceAtOptions<'_>>) -> 
     let mut winner: Option<&PricePolicy> = None;
     let mut base_table: Option<&HashMap<&'static str, DualCurrencyUnit>> = None;
     for policy in scope.iter().rev() {
-        let table_opt: Option<&HashMap<&'static str, DualCurrencyUnit>> = match (&policy.peak, &policy.off_peak) {
-            (Some(_), Some(_)) => Some(if peak { policy.peak.as_ref().unwrap() } else { policy.off_peak.as_ref().unwrap() }),
-            _ => Some(&policy.prices),
-        };
+        let table_opt: Option<&HashMap<&'static str, DualCurrencyUnit>> =
+            match (&policy.peak, &policy.off_peak) {
+                (Some(_), Some(_)) => Some(if peak {
+                    policy.peak.as_ref().unwrap()
+                } else {
+                    policy.off_peak.as_ref().unwrap()
+                }),
+                _ => Some(&policy.prices),
+            };
         if let Some(table) = table_opt {
             if table.contains_key(model) {
                 winner = Some(policy);
@@ -288,17 +412,36 @@ pub fn price_at(model: &str, time_ms: i64, opts: Option<PriceAtOptions<'_>>) -> 
         let last = scope.last().copied().unwrap_or(&policies[0]);
         winner = Some(last);
         let table = match (&last.peak, &last.off_peak) {
-            (Some(_), Some(_)) => if peak { last.peak.as_ref().unwrap() } else { last.off_peak.as_ref().unwrap() },
+            (Some(_), Some(_)) => {
+                if peak {
+                    last.peak.as_ref().unwrap()
+                } else {
+                    last.off_peak.as_ref().unwrap()
+                }
+            }
             _ => &last.prices,
         };
         base_table = Some(table);
     }
     let unit = price_for(model, base_table.unwrap());
-    let mode: &'static str = match (winner.unwrap().peak.as_ref(), winner.unwrap().off_peak.as_ref()) {
-        (Some(_), Some(_)) => if peak { "peak" } else { "offPeak" },
+    let mode: &'static str = match (
+        winner.unwrap().peak.as_ref(),
+        winner.unwrap().off_peak.as_ref(),
+    ) {
+        (Some(_), Some(_)) => {
+            if peak {
+                "peak"
+            } else {
+                "offPeak"
+            }
+        }
         _ => "flat",
     };
-    PriceAtResult { cny: unit.cny, usd: unit.usd, mode }
+    PriceAtResult {
+        cny: unit.cny,
+        usd: unit.usd,
+        mode,
+    }
 }
 
 fn price_for(model: &str, table: &HashMap<&'static str, DualCurrencyUnit>) -> DualCurrencyUnit {

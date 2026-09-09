@@ -16,7 +16,7 @@ async function loadOpenCodeModule(temp) {
     bundle: true,
     format: 'esm',
     platform: 'node',
-    target: 'node20',
+    target: 'node24',
     outfile,
     external: ['node:*'],
   })

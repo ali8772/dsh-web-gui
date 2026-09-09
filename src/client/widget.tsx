@@ -10,26 +10,37 @@ import { createElement as h, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import whaleChanUrl from '../../assets/whale-chan.png'
 import {
-  importModelFromUrl,
-  importModelFromZip,
   loadStoredModel,
+  prepareModelFromUrl,
   readConfig,
   removeStoredModel,
+  saveStoredModel,
 } from './live2d/ui.ts'
+import { createLive2DMutationQueue, removeLive2DIfCurrent, replaceLive2DIfCurrent } from './live2d/mutation.ts'
+import { prepareModelFromZipWorker } from './live2d/zip-client.ts'
 import type { Live2DHandle } from './live2d/core.ts'
 import type { StoredModel } from './live2d/parse.ts'
 import { ensureCubismCore } from './live2d/runtime.ts'
+import { WHALE_PET_PATHS } from '../shared/contract.ts'
+import { createPollingController } from './polling-controller.ts'
+import {
+  issueCompanionGrant,
+  listCompanionGrants,
+  revokeCompanionGrant,
+  type CompanionGrant,
+} from './companion.ts'
 
 /** 动态加载 Live2D chunk（pixi + Cubism 渲染），避免运行时检查进入主 bundle。 */
 interface Live2DChunk {
-  mountLive2D(canvas: HTMLCanvasElement, stored: StoredModel, options?: { scale?: number }): Promise<Live2DHandle>
+  mountLive2D(container: HTMLElement, stored: StoredModel, options?: { scale?: number; hidden?: boolean }): Promise<Live2DHandle>
 }
+const LIVE2D_CHUNK_URL = WHALE_PET_PATHS.live2d
 let live2dChunkPromise: Promise<Live2DChunk> | null = null
 async function loadLive2DChunk(): Promise<Live2DChunk> {
   // pixi-live2d-display/cubism4 在模块顶层检查全局，因此顺序不能颠倒。
   await ensureCubismCore()
   if (live2dChunkPromise === null) {
-    live2dChunkPromise = import('/dsh-whale-pet-live2d.js')
+    live2dChunkPromise = import(LIVE2D_CHUNK_URL)
       .then((mod) => mod as unknown as Live2DChunk)
       .catch((cause) => {
         live2dChunkPromise = null
@@ -37,6 +48,18 @@ async function loadLive2DChunk(): Promise<Live2DChunk> {
       })
   }
   return live2dChunkPromise
+}
+
+// 组件卸载/重挂后仍共享同一持久化队列，确保旧导入不能与新组件操作并发写 active 记录。
+const live2dMutationQueue = createLive2DMutationQueue()
+
+function disposeLive2DHandle(handle: Live2DHandle | null): void {
+  try {
+    handle?.dispose()
+  } catch (cause) {
+    // canvas/Blob URL 已由 renderer 的 finally 释放；清理异常不能阻断移除或替换。
+    console.warn('dsh-whale-pet: Live2D renderer cleanup failed', cause)
+  }
 }
 
 export interface BalanceInfo {
@@ -138,6 +161,7 @@ function taskStageText(p: TaskProgressInfo | undefined): string {
 
 /** 宿主按实际使用模型聚合的 token/费用明细。 */
 export interface ModelUsageSummary {
+  provider: string
   model: string
   calls: number
   inputTokens: number
@@ -258,6 +282,7 @@ interface TaskListLike {
   subscribe(cb: () => void): () => void
   getSnapshot(): {
     current?: string
+    ids?: readonly string[]
     byId: Record<string, { running: boolean; displayTitle: string; updatedAt: number; parentId?: string }>
   }
 }
@@ -275,6 +300,8 @@ export function attachTaskSource(
   let debugOverride: TaskInfo | null = null
   let progressById = new Map<string, TaskProgressInfo>()
   let lastProgressFetch = 0
+  let progressFetchRunning = false
+  let queuedProgressIds: readonly string[] | null = null
   let runningIds = new Set<string>()
   /** 已报告完成的会话，避免重复弹窗。 */
   const reportedComplete = new Set<string>()
@@ -289,14 +316,21 @@ export function attachTaskSource(
 
   /** POST 宿主 /api/whale-pet/tasks，把真实进度合并回当前任务列表。 */
   const fetchProgress = async (ids: readonly string[]): Promise<void> => {
-    if (disposed) return
+    if (disposed || ids.length === 0) return
+    if (progressFetchRunning) {
+      queuedProgressIds = [...ids]
+      return
+    }
     const now = Date.now()
-    if (ids.length === 0) return
-    if (!forceProgressFetch && now - lastProgressFetch < 200) return
+    if (!forceProgressFetch && now - lastProgressFetch < 200) {
+      queuedProgressIds = [...ids]
+      return
+    }
     forceProgressFetch = false
     lastProgressFetch = now
+    progressFetchRunning = true
     try {
-      const response = await fetch('/api/whale-pet/tasks', {
+      const response = await fetch(WHALE_PET_PATHS.tasks, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ids }),
@@ -338,17 +372,26 @@ export function attachTaskSource(
       progressById = next
     } catch {
       // 拉取失败：保留上一次进度
+    } finally {
+      progressFetchRunning = false
     }
+    if (disposed) return
     const items = taskCurrent.items.map((item) => ({ ...item, progress: progressById.get(item.id) }))
     taskCurrent = { ...taskCurrent, items }
     for (const listener of taskListeners) listener(taskCurrent)
+    const queued = queuedProgressIds
+    queuedProgressIds = null
+    if (queued !== null) {
+      forceProgressFetch = true
+      void fetchProgress(queued)
+    }
   }
 
   /** 拉取单会话汇总并发布到持久化弹窗状态。 */
   const fetchSummary = async (id: string): Promise<void> => {
     if (disposed) return
     try {
-      const response = await fetch('/api/whale-pet/task-summary', {
+      const response = await fetch(WHALE_PET_PATHS.taskSummary, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id }),
@@ -388,15 +431,17 @@ export function attachTaskSource(
     try {
       const snap = list.getSnapshot()
       const byId = snap.byId
-      const newRunningIds = new Set<string>()
-      const candidates = Object.keys(byId)
-        .filter((id) => byId[id]?.running === true)
+      // 完成边沿必须比较全部真实 running 会话；前十只是展示窗口，不能参与状态判定。
+      const newRunningIds = new Set(
+        Object.keys(byId).filter((id) => byId[id]?.running === true),
+      )
+      const candidates = [...newRunningIds]
         .sort((a, b) => (byId[b]?.updatedAt ?? 0) - (byId[a]?.updatedAt ?? 0))
         .slice(0, 10)
+      const visibleIds = new Set(candidates)
       for (const id of candidates) {
-        newRunningIds.add(id)
         const parentId = byId[id]?.parentId
-        if (parentId !== undefined && byId[parentId] !== undefined) newRunningIds.add(parentId)
+        if (parentId !== undefined && byId[parentId] !== undefined) visibleIds.add(parentId)
       }
       // 检测从 running → 非 running 的会话：任务完成。
       for (const id of runningIds) {
@@ -407,8 +452,7 @@ export function attachTaskSource(
       }
       runningIds = newRunningIds
       for (const id of newRunningIds) reportedComplete.delete(id)
-      const visibleIds = [...runningIds]
-      const items = visibleIds.map((id) => ({
+      const items = [...visibleIds].map((id) => ({
         id,
         title: byId[id]?.displayTitle ?? '',
         parentId: byId[id]?.parentId,
@@ -438,7 +482,7 @@ export function attachTaskSource(
       },
       getSessions: () => {
         try {
-          return list.getSnapshot().ids
+          return list.getSnapshot().ids ?? Object.keys(list.getSnapshot().byId)
         } catch {
           return []
         }
@@ -606,13 +650,10 @@ function bubbleFor(
   const current = count > 0 ? task.items[0] : null
   const title = '⏳ 任务进度'
   const sub = count > 1 ? count + ' 个任务进行中' : (current !== null ? current.title : '空闲')
-  return { title, sub, cls: 'normal', currency: 'CNY', approx: false, calls: 0 }
+  return { title, sub, cls: 'normal' }
 }
 
-export interface WhalePetWidgetProps {
-  // slots 运行时注入的 props；本组件不消费具体字段
-  [key: string]: unknown
-}
+export type WhalePetWidgetProps = object
 
 function formatTokens(n: number): string {
   return Math.max(0, Math.trunc(n)).toLocaleString('zh-CN')
@@ -622,19 +663,22 @@ function modelUsageRows(scope: 'current' | 'total', rows: readonly ModelUsageSum
   if (rows.length === 0) return null
   return h('div', { className: 'wp-summary-models', 'data-summary-model-scope': scope },
     h('div', { className: 'wp-summary-models-title' }, '按模型预估'),
-    ...rows.map((row) => h('div', {
-      key: row.model,
-      className: 'wp-summary-model-row',
-      'data-summary-model': row.model,
-    },
-      h('div', { className: 'wp-summary-model-main' },
-        h('span', { className: 'wp-summary-model-name', title: row.model }, row.model),
-        h('span', { className: 'wp-summary-model-cost' }, `¥${row.cost.toFixed(2)}`),
-      ),
-      h('div', { className: 'wp-summary-model-meta' },
-        `${row.calls} 次 · ${formatTokens(row.inputTokens + row.cacheReadTokens + row.outputTokens)} tokens`,
-      ),
-    )),
+    ...rows.map((row) => {
+      const routeLabel = row.provider === '' ? row.model : `${row.provider}/${row.model}`
+      return h('div', {
+        key: routeLabel,
+        className: 'wp-summary-model-row',
+        'data-summary-model': routeLabel,
+      },
+        h('div', { className: 'wp-summary-model-main' },
+          h('span', { className: 'wp-summary-model-name', title: routeLabel }, routeLabel),
+          h('span', { className: 'wp-summary-model-cost' }, `¥${row.cost.toFixed(2)}`),
+        ),
+        h('div', { className: 'wp-summary-model-meta' },
+          `${row.calls} 次 · ${formatTokens(row.inputTokens + row.cacheReadTokens + row.outputTokens)} tokens`,
+        ),
+      )
+    }),
   )
 }
 
@@ -644,6 +688,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   const [bgLight, setBgLight] = useState(false)   // 页面背景是否为浅色（白底 -> 黑气泡白字）
   const [task, setTask] = useState<TaskInfo>({ running: false, count: 0, items: [] })
   const [scrollOffset, setScrollOffset] = useState(0)   // 任务区滚动偏移（行数）
+  const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
   const [peak, setPeak] = useState<PeakStatus>(() => computePeak())   // 高峰时段（余额栏徽标）
   const taskRef = useRef(task)
   taskRef.current = task   // 拖拽 effect 的闭包需要读到最新任务状态
@@ -675,29 +720,57 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   const [live2dOpen, setLive2dOpen] = useState(false)
   const [live2dUrl, setLive2dUrl] = useState('')
   const [live2dExprCount, setLive2dExprCount] = useState(0)
+  const [companionGrants, setCompanionGrants] = useState<readonly CompanionGrant[]>([])
+  const [companionLabel, setCompanionLabel] = useState('Windows companion')
+  const [companionToken, setCompanionToken] = useState<string | null>(null)
+  const [companionError, setCompanionError] = useState<string | null>(null)
+  const [companionBusy, setCompanionBusy] = useState(false)
   const live2dHandleRef = useRef<Live2DHandle | null>(null)
-  const live2dCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const live2dContainerRef = useRef<HTMLDivElement | null>(null)
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
+  const live2dDialogRef = useRef<HTMLDivElement | null>(null)
+  const summaryDialogRef = useRef<HTMLDivElement | null>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
   const live2dFileRef = useRef<HTMLInputElement | null>(null)
   const live2dOperationRef = useRef(0)
 
-  const setLive2dCanvas = (node: HTMLCanvasElement | null): void => {
-    live2dCanvasRef.current = node
+  /** 新 renderer 先在独立 canvas 挂载；commit 时才销毁旧 renderer 并显示新 canvas。 */
+  const stageStored = async (stored: StoredModel, operation: number) => {
+    const container = live2dContainerRef.current
+    if (container === null || !container.isConnected) throw new Error('Live2D 容器尚未就绪，请稍后重试')
+    const chunk = await loadLive2DChunk()
+    if (operation !== live2dOperationRef.current) throw new Error('Live2D 导入已取消')
+
+    // 旧模型继续显示到 durable commit 成功，避免加载失败时闪回 PNG 或破坏当前模型。
+    const nextHandle = await chunk.mountLive2D(container, stored, { scale: petScaleRef.current, hidden: true })
+    const nextCanvas = nextHandle.canvas
+    let settled = false
+    return {
+      commit(): void {
+        if (settled) return
+        settled = true
+        const previousHandle = live2dHandleRef.current
+        live2dHandleRef.current = nextHandle
+        nextCanvas.style.visibility = ''
+        disposeLive2DHandle(previousHandle)
+        setLive2dExprCount(nextHandle.expressionCount())
+      },
+      discard(): void {
+        if (settled) return
+        settled = true
+        disposeLive2DHandle(nextHandle)
+      },
+    }
   }
 
-  /** 用已持久化模型挂载/重挂 Live2D；只有当前 operation 才能接管画布。 */
-  const mountStored = async (stored: StoredModel, operation: number): Promise<void> => {
-    const canvas = live2dCanvasRef.current
-    if (canvas === null || !canvas.isConnected) throw new Error('Live2D 画布尚未就绪，请稍后重试')
-    const chunk = await loadLive2DChunk()
-    if (operation !== live2dOperationRef.current) return
-    const nextHandle = await chunk.mountLive2D(canvas, stored, { scale: petScaleRef.current })
-    if (operation !== live2dOperationRef.current || !canvas.isConnected) {
-      nextHandle.dispose()
+  /** 恢复已保存模型（启动路径不需要再次提交 durable state）。 */
+  const mountRestored = async (stored: StoredModel, operation: number): Promise<void> => {
+    const staged = await stageStored(stored, operation)
+    if (operation !== live2dOperationRef.current) {
+      staged.discard()
       return
     }
-    live2dHandleRef.current?.dispose()
-    live2dHandleRef.current = nextHandle
-    setLive2dExprCount(nextHandle.expressionCount())
+    staged.commit()
   }
 
   /** 大小变化时同步提高渲染分辨率，Live2D 放大后仍保持清晰。 */
@@ -705,17 +778,24 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     live2dHandleRef.current?.setScale(petScale)
   }, [petScale])
 
+  const commitPreparedModel = async (stored: StoredModel, operation: number): Promise<boolean> => {
+    return replaceLive2DIfCurrent(
+      live2dMutationQueue,
+      () => operation === live2dOperationRef.current,
+      stored,
+      { load: loadStoredModel, save: saveStoredModel, remove: removeStoredModel },
+      () => stageStored(stored, operation),
+    )
+  }
+
   const handleZipImport = async (file: File): Promise<void> => {
     const operation = ++live2dOperationRef.current
     setLive2d({ phase: 'loading' })
     try {
       await loadLive2DChunk()
       const bytes = await file.arrayBuffer()
-      const { config } = await importModelFromZip(bytes)
-      const stored = await loadStoredModel()
-      if (stored === null) throw new Error('导入后模型数据缺失')
-      await mountStored(stored, operation)
-      if (operation !== live2dOperationRef.current) return
+      const { config, stored } = await prepareModelFromZipWorker(bytes)
+      if (!await commitPreparedModel(stored, operation)) return
       setLive2d({ phase: 'ready', name: config.name })
       setLive2dOpen(false)
     } catch (cause) {
@@ -732,11 +812,8 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     setLive2d({ phase: 'loading' })
     try {
       await loadLive2DChunk()
-      const { config } = await importModelFromUrl(url)
-      const stored = await loadStoredModel()
-      if (stored === null) throw new Error('导入后模型数据缺失')
-      await mountStored(stored, operation)
-      if (operation !== live2dOperationRef.current) return
+      const { config, stored } = await prepareModelFromUrl(url)
+      if (!await commitPreparedModel(stored, operation)) return
       setLive2d({ phase: 'ready', name: config.name })
       setLive2dOpen(false)
     } catch (cause) {
@@ -746,37 +823,126 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     }
   }
 
-  const handleRemoveModel = async (): Promise<void> => {
-    ++live2dOperationRef.current
-    live2dHandleRef.current?.dispose()
-    live2dHandleRef.current = null
-    setLive2dExprCount(0)
+  const refreshCompanionGrants = async (): Promise<void> => {
     try {
-      await removeStoredModel()
-      setLive2d({ phase: 'off' })
-      setLive2dOpen(false)
+      setCompanionGrants(await listCompanionGrants())
+      setCompanionError(null)
     } catch (cause) {
-      setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+      setCompanionError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
+  const handleIssueCompanion = async (): Promise<void> => {
+    if (!window.confirm('生成新令牌后，明文只显示一次。请确认继续。')) return
+    setCompanionBusy(true)
+    setCompanionToken(null)
+    try {
+      const issued = await issueCompanionGrant(companionLabel)
+      setCompanionToken(issued.token)
+      setCompanionGrants((current) => [...current, issued.grant])
+      setCompanionError(null)
+    } catch (cause) {
+      setCompanionError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setCompanionBusy(false)
+    }
+  }
+
+  const handleRevokeCompanion = async (grant: CompanionGrant): Promise<void> => {
+    if (!window.confirm(`撤销“${grant.label}”的桌面伴侣访问？`)) return
+    setCompanionBusy(true)
+    try {
+      await revokeCompanionGrant(grant.id)
+      setCompanionGrants((current) => current.filter((item) => item.id !== grant.id))
+      setCompanionToken(null)
+      setCompanionError(null)
+    } catch (cause) {
+      setCompanionError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setCompanionBusy(false)
+    }
+  }
+
+  const closeLive2DSettings = (): void => {
+    setCompanionToken(null)
+    setLive2dOpen(false)
+  }
+
+  const handleRemoveModel = async (): Promise<void> => {
+    const operation = ++live2dOperationRef.current
+    try {
+      // 与导入提交使用同一队列；delete 成功后才销毁 renderer，失败则保留当前模型。
+      await removeLive2DIfCurrent(
+        live2dMutationQueue,
+        () => operation === live2dOperationRef.current,
+        removeStoredModel,
+        () => {
+          const previousHandle = live2dHandleRef.current
+          live2dHandleRef.current = null
+          disposeLive2DHandle(previousHandle)
+          setLive2dExprCount(0)
+          setLive2d({ phase: 'off' })
+          setLive2dOpen(false)
+        },
+      )
+    } catch (cause) {
+      if (operation === live2dOperationRef.current) {
+        setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!live2dOpen) return
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : settingsButtonRef.current
+    setCompanionToken(null)
+    void refreshCompanionGrants()
+    queueMicrotask(() => live2dDialogRef.current?.focus())
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') closeLive2DSettings()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previousFocusRef.current?.focus()
+    }
+  }, [live2dOpen])
+
+  useEffect(() => {
+    if (summaryDialog === null) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    queueMicrotask(() => summaryDialogRef.current?.focus())
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') dismissSummary()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previous?.focus()
+    }
+  }, [summaryDialog])
+
   // 挂载时读取配置：已导入模型则自动恢复。
   useEffect(() => {
-    const cfg = readConfig()
-    if (cfg === null) return
     const operation = ++live2dOperationRef.current
-    setLive2d({ phase: 'loading' })
     void (async () => {
+      const cfg = await readConfig()
+      if (operation !== live2dOperationRef.current || cfg === null) return
+      setLive2d({ phase: 'loading' })
       try {
         await loadLive2DChunk()
-        const stored = await loadStoredModel()
-        if (operation !== live2dOperationRef.current) return
-        if (stored === null) {
-          setLive2d({ phase: 'error', error: '已保存模型版本过旧，请重新导入' })
-          return
-        }
-        await mountStored(stored, operation)
-        if (operation === live2dOperationRef.current) setLive2d({ phase: 'ready', name: stored.config.name })
+        // 等待旧组件遗留的导入/回滚结束后再读取 active 记录，禁止恢复中间态。
+        await live2dMutationQueue.run(async () => {
+          if (operation !== live2dOperationRef.current) return
+          const stored = await loadStoredModel()
+          if (operation !== live2dOperationRef.current) return
+          if (stored === null) {
+            setLive2d({ phase: 'off' })
+            return
+          }
+          await mountRestored(stored, operation)
+          if (operation === live2dOperationRef.current) setLive2d({ phase: 'ready', name: stored.config.name })
+        })
       } catch (cause) {
         if (operation === live2dOperationRef.current) {
           setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
@@ -785,8 +951,9 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     })()
     return () => {
       ++live2dOperationRef.current
-      live2dHandleRef.current?.dispose()
+      const previousHandle = live2dHandleRef.current
       live2dHandleRef.current = null
+      disposeLive2DHandle(previousHandle)
     }
     // 只在挂载时执行一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -808,43 +975,71 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     startedOnLive2D: boolean
   } | null>(null)
 
-  const refresh = async (): Promise<void> => {
-    setFetching(true)
-    try {
-      const response = await fetch('/api/whale-pet/state', { cache: 'no-store', headers: { Accept: 'application/json' } })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const body = (await response.json()) as PetState
-      if (body === null || typeof body !== 'object' || body.ok !== true) throw new Error('bad payload')
-      setData(body)
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setFetching(false)
-    }
+  const statePollingRef = useRef<ReturnType<typeof createPollingController<PetState>> | null>(null)
+  if (statePollingRef.current === null) {
+    statePollingRef.current = createPollingController({
+      active: () => document.visibilityState === 'visible',
+      poll: async (signal) => {
+        setFetching(true)
+        const response = await fetch(WHALE_PET_PATHS.state, {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+          signal,
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const body = (await response.json()) as PetState
+        if (body === null || typeof body !== 'object' || body.ok !== true) throw new Error('bad payload')
+        return body
+      },
+      commit: (body) => {
+        setData(body)
+        setError(null)
+        setFetching(false)
+      },
+      fail: (cause) => {
+        setError(cause instanceof Error ? cause.message : String(cause))
+        setFetching(false)
+      },
+    })
   }
+  const refresh = (): Promise<void> => statePollingRef.current?.trigger() ?? Promise.resolve()
 
-  const refreshGo = async (): Promise<void> => {
-    setGoFetching(true)
-    try {
-      const response = await fetch('/api/whale-pet/opencode-go', { cache: 'no-store', headers: { Accept: 'application/json' } })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const body = (await response.json()) as { ok?: boolean; usage?: OpenCodeGoUsage }
-      if (body === null || typeof body !== 'object' || body.ok !== true || body.usage === undefined) throw new Error('bad payload')
-      setGoUsage(body.usage)
-      setGoError(null)
-    } catch (cause) {
-      setGoError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setGoFetching(false)
-    }
+  const goPollingRef = useRef<ReturnType<typeof createPollingController<OpenCodeGoUsage>> | null>(null)
+  if (goPollingRef.current === null) {
+    goPollingRef.current = createPollingController({
+      active: () => document.visibilityState === 'visible',
+      poll: async (signal) => {
+        setGoFetching(true)
+        const response = await fetch(WHALE_PET_PATHS.openCodeGo, {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+          signal,
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const body = (await response.json()) as { ok?: boolean; usage?: OpenCodeGoUsage }
+        if (body === null || typeof body !== 'object' || body.ok !== true || body.usage === undefined) throw new Error('bad payload')
+        return body.usage
+      },
+      commit: (usage) => {
+        setGoUsage(usage)
+        setGoError(null)
+        setGoFetching(false)
+      },
+      fail: (cause) => {
+        setGoError(cause instanceof Error ? cause.message : String(cause))
+        setGoFetching(false)
+      },
+    })
   }
+  const refreshGo = (): Promise<void> => goPollingRef.current?.trigger() ?? Promise.resolve()
 
   useEffect(() => {
     void refresh()
     const timer = setInterval(() => void refresh(), REFRESH_MS)
     const onVisible = (): void => {
-      if (document.visibilityState === 'visible') void refresh()
+      const visible = document.visibilityState === 'visible'
+      live2dHandleRef.current?.setActive(visible)
+      if (visible) void refresh()
     }
     document.addEventListener('visibilitychange', onVisible)
     const onResize = (): void => {
@@ -855,6 +1050,8 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('resize', onResize)
+      statePollingRef.current?.dispose()
+      goPollingRef.current?.dispose()
     }
   }, [])
 
@@ -895,10 +1092,18 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     if (mode >= count) setMode(0)
   }, [task.running, mode])
 
-  // 任务进度页自动滚动：超过 5 条时每 5s 向上滚动一条；列表变化或离开任务页时复位
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (media === undefined) return
+    const update = (): void => setReducedMotion(media.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  // 任务进度页自动滚动：超过 5 条时每 5s 向上滚动一条；减少动态时保持静止。
   useEffect(() => {
     setScrollOffset(0)
-    if (mode !== 1 || task.items.length <= TASK_VIEW_SIZE) return
+    if (reducedMotion || mode !== 1 || task.items.length <= TASK_VIEW_SIZE) return
     const timer = window.setInterval(() => {
       setScrollOffset((o) => {
         const n = task.items.length
@@ -912,7 +1117,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
       })
     }, TASK_SCROLL_MS)
     return () => window.clearInterval(timer)
-  }, [mode, task.items.length])
+  }, [mode, reducedMotion, task.items.length])
 
   // 背景亮度检测：余额栏反色自适应（浅背景 -> 黑底白字；深背景 -> 白底黑字）
   useEffect(() => {
@@ -1067,14 +1272,24 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     const pct = p !== undefined && p.pct !== null ? p.pct : null
     const stageText = taskStageText(p)
     const waiting = p !== undefined && p.awaitingUser === true
+    const activateTask = (event: { stopPropagation(): void }): void => {
+      event.stopPropagation()
+      openTaskSession(item.id)
+    }
     return h('div', {
       key,
       className: `wp-task-row${child ? ' wp-task-child' : ''}${waiting ? ' wp-task-waiting' : ''}`,
       'data-task-id': item.id,
+      role: 'button',
+      tabIndex: 0,
+      'aria-label': `${item.title}，${stageText}，打开会话`,
       title: waiting ? '需要你的操作 · 点击跳转到该会话' : (child ? '子代理 · 点击跳转到该会话' : '点击跳转到该会话'),
-      onClick: (event: MouseEvent): void => {
-        event.stopPropagation()
-        openTaskSession(item.id)
+      onClick: activateTask,
+      onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>): void => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          activateTask(event)
+        }
       },
     },
       h('div', { className: 'wp-task-main' },
@@ -1104,7 +1319,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   return h('div', { className: 'wp-root', ref: rootRef },
     h('div',
       {
-        className: `wp-pet${dragging ? ' wp-dragging' : ''}${bubble.cls === 'wp-low-balance' ? ' wp-low-balance' : ''}${bgLight ? ' wp-bg-light' : ' wp-bg-dark'}${live2d.phase === 'ready' ? ' wp-live2d-active' : ''}`,
+        className: `wp-pet${dragging ? ' wp-dragging' : ''}${bubble.cls === 'wp-low-balance' ? ' wp-low-balance' : ''}${bgLight ? ' wp-bg-light' : ' wp-bg-dark'}${live2dHandleRef.current !== null ? ' wp-live2d-active' : ''}`,
         ref: petRef,
         style: {
           transform: `translate(${pos.x}px, ${pos.y}px)`,
@@ -1113,9 +1328,9 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
         },
         title: '点击切换：余额与消费 / 任务进度 / OpenCode Go 额度',
       },
-      h('div', { className: `wp-bubble ${bubble.cls}` },
+      h('div', { className: `wp-bubble ${bubble.cls}`, role: 'status', 'aria-live': 'polite', 'aria-atomic': true },
         h('div', { className: 'wp-bubble-title' },
-          h('span', { className: `wp-dot ${dotClass}` }),
+          h('span', { className: `wp-dot ${dotClass}`, 'aria-hidden': true }),
           h('span', null, bubble.title),
           mode === 0 && (
             h('span', {
@@ -1215,15 +1430,13 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
             target: '_blank',
             rel: 'noopener noreferrer',
             title: '前往 DeepSeek 平台充值',
-            onPointerDown: (e) => { e.stopPropagation() },
-            onClick: (e) => { e.stopPropagation() },
+            onPointerDown: (e: React.PointerEvent<HTMLAnchorElement>) => { e.stopPropagation() },
+            onClick: (e: React.MouseEvent<HTMLAnchorElement>) => { e.stopPropagation() },
           }, '充值 +')
         ),
       ),
       h('div', { className: 'wp-whale' },
-        h('div', { className: 'wp-whale-live2d' },
-          h('canvas', { ref: setLive2dCanvas, className: 'wp-live2d-canvas' }),
-        ),
+        h('div', { ref: live2dContainerRef, className: 'wp-whale-live2d', 'aria-hidden': true }),
         h('img', {
           className: 'wp-whale-svg wp-whale-img',
           src: whaleChanUrl,
@@ -1232,12 +1445,13 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
         }),
       ),
       h('button', {
+        ref: settingsButtonRef,
         className: 'wp-live2d-config',
         type: 'button',
         title: '导入 / 管理 Live2D 模型',
         'aria-label': '打开 Live2D 模型设置',
-        onPointerDown: (e) => { e.stopPropagation() },
-        onClick: (e) => {
+        onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => { e.stopPropagation() },
+        onClick: (e: React.MouseEvent<HTMLButtonElement>) => {
           e.stopPropagation()
           setLive2dOpen(true)
         },
@@ -1253,9 +1467,17 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
         className: 'wp-summary-backdrop',
         onClick: dismissSummary,
       },
-        h('div', { className: 'wp-summary-dialog', onClick: (e): void => e.stopPropagation() },
+        h('div', {
+          ref: summaryDialogRef,
+          className: 'wp-summary-dialog',
+          role: 'dialog',
+          'aria-modal': true,
+          'aria-labelledby': 'wp-summary-title',
+          tabIndex: -1,
+          onClick: (e: React.MouseEvent<HTMLDivElement>): void => e.stopPropagation(),
+        },
           h('div', { className: 'wp-summary-header' },
-            h('span', { className: 'wp-summary-title' }, '任务完成'),
+            h('span', { className: 'wp-summary-title', id: 'wp-summary-title' }, '任务完成'),
             h('button', {
               className: 'wp-summary-close',
               type: 'button',
@@ -1334,17 +1556,25 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     live2dOpen && createPortal(
       h('div', {
         className: 'wp-live2d-backdrop',
-        onClick: () => setLive2dOpen(false),
+        onClick: closeLive2DSettings,
       },
-        h('div', { className: 'wp-live2d-dialog', onClick: (e): void => e.stopPropagation() },
+        h('div', {
+          ref: live2dDialogRef,
+          className: 'wp-live2d-dialog',
+          role: 'dialog',
+          'aria-modal': true,
+          'aria-labelledby': 'wp-live2d-title',
+          tabIndex: -1,
+          onClick: (e: React.MouseEvent<HTMLDivElement>): void => e.stopPropagation(),
+        },
           h('div', { className: 'wp-live2d-header' },
-            h('span', { className: 'wp-live2d-title' }, 'Live2D 模型'),
+            h('span', { className: 'wp-live2d-title', id: 'wp-live2d-title' }, 'Live2D 模型与桌面伴侣'),
             h('button', {
               className: 'wp-live2d-close',
               type: 'button',
               title: '关闭',
               'aria-label': '关闭 Live2D 设置',
-              onClick: () => setLive2dOpen(false),
+              onClick: closeLive2DSettings,
             }, '×'),
           ),
           h('div', { className: 'wp-live2d-body' },
@@ -1431,6 +1661,46 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
                 }, '恢复默认'),
               ),
               h('div', { className: 'wp-live2d-hint' }, '仅调整宠物模型大小，不改变气泡与对话框'),
+            ),
+            h('div', { className: 'wp-live2d-section wp-companion-section' },
+              h('div', { className: 'wp-live2d-label' }, '桌面伴侣配对'),
+              h('div', { className: 'wp-live2d-hint' }, '为 PowerShell 或 Rust 伴侣生成独立令牌。令牌只显示一次，请立即保存。'),
+              h('div', { className: 'wp-live2d-urlrow' },
+                h('input', {
+                  className: 'wp-live2d-url',
+                  type: 'text',
+                  maxLength: 80,
+                  value: companionLabel,
+                  'aria-label': '桌面伴侣设备名称',
+                  onChange: (e: React.ChangeEvent<HTMLInputElement>) => setCompanionLabel(e.target.value),
+                }),
+                h('button', {
+                  className: 'wp-live2d-action',
+                  type: 'button',
+                  disabled: companionBusy || companionLabel.trim() === '',
+                  onClick: () => void handleIssueCompanion(),
+                }, '生成令牌'),
+              ),
+              companionToken !== null && h('div', { className: 'wp-companion-token' },
+                h('code', { 'data-companion-token': 'once' }, companionToken),
+                h('button', {
+                  className: 'wp-live2d-action wp-live2d-secondary',
+                  type: 'button',
+                  onClick: () => void navigator.clipboard.writeText(companionToken),
+                }, '复制'),
+              ),
+              companionError !== null && h('div', { className: 'wp-live2d-status', 'data-companion-error': 'true' }, companionError),
+              companionGrants.length === 0
+                ? h('div', { className: 'wp-live2d-hint' }, '尚未配对桌面伴侣')
+                : companionGrants.map((grant) => h('div', { className: 'wp-companion-grant', key: grant.id },
+                    h('span', null, grant.label),
+                    h('button', {
+                      className: 'wp-live2d-remove',
+                      type: 'button',
+                      disabled: companionBusy,
+                      onClick: () => void handleRevokeCompanion(grant),
+                    }, '撤销'),
+                  )),
             ),
             live2d.phase !== 'off' && (
               h('div', { className: 'wp-live2d-section' },

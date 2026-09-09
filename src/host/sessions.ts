@@ -10,11 +10,11 @@
  * `dsh-session-persistence-jsonl` 的容器语义一致。
  */
 
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs'
 import { join, basename, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { zstdDecompressSync } from 'node:zlib'
-import { createPriceCache, costOf, type PriceAtResult } from './pricing.ts'
+import { constants, zstdDecompressSync } from 'node:zlib'
+import { createPriceCache, costOf, ZERO_PRICE, type PriceAtResult } from './pricing.ts'
 
 const ZSTD_MAGIC = 0xFD2FB528
 const DAY_TIMEZONE = 'Asia/Shanghai'
@@ -86,9 +86,9 @@ export function listSessionLogs(home: string): SessionLogMeta[] {
   const root = join(home, 'sessions')
   const out: SessionLogMeta[] = []
   const walk = (dir: string): void => {
-    let entries: ReturnType<typeof readdirSync>
+    let entries: Dirent<string>[]
     try {
-      entries = readdirSync(dir, { withFileTypes: true })
+      entries = readdirSync(dir, { encoding: 'utf8', withFileTypes: true })
     } catch {
       return
     }
@@ -122,22 +122,32 @@ interface ZstdFrameRange {
   end: number
 }
 
+export interface ZstdFrameScan {
+  readonly frames: ZstdFrameRange[]
+  /** 不完整最终 frame 的起点；完整流中不存在。 */
+  readonly tornStart?: number
+}
+
 /**
  * 结构扫描：定位可完整解码的 zstd frame（与 dsh-session-persistence-jsonl
- * 的 scanZstdFrames 语义一致；torn 尾帧被跳过，等价于 committed-prefix）。
+ * 的 scanZstdFrames 语义一致），并保留不完整最终 frame 的起点供前缀恢复。
  */
-export function scanZstdFrames(buffer: Buffer): ZstdFrameRange[] {
+export function scanZstdFrameStream(buffer: Buffer): ZstdFrameScan {
   const frames: ZstdFrameRange[] = []
   let offset = 0
   while (offset < buffer.length) {
     const start = offset
-    if (buffer.length - offset < 4) break
-    if (buffer.readUInt32LE(offset) !== ZSTD_MAGIC) break
+    if (buffer.length - offset < 4) return { frames, tornStart: start }
+    if (buffer.readUInt32LE(offset) !== ZSTD_MAGIC) {
+      throw new Error(`corrupt Zstandard session log: invalid frame magic at byte ${offset}`)
+    }
     offset += 4
-    if (offset === buffer.length) break
+    if (offset === buffer.length) return { frames, tornStart: start }
     const descriptor = buffer.readUInt8(offset)
     offset += 1
-    if ((descriptor & 0x18) !== 0) break
+    if ((descriptor & 0x18) !== 0) {
+      throw new Error(`corrupt Zstandard session log: reserved frame-header bit at byte ${offset - 1}`)
+    }
     const contentSizeFlag = descriptor >>> 6
     const singleSegment = (descriptor & 0x20) !== 0
     const checksum = (descriptor & 0x04) !== 0
@@ -147,52 +157,74 @@ export function scanZstdFrames(buffer: Buffer): ZstdFrameRange[] {
       ? (singleSegment ? 1 : 0)
       : 1 << contentSizeFlag
     const remainingHeaderBytes = (singleSegment ? 0 : 1) + dictionaryBytes + contentSizeBytes
-    if (buffer.length - offset < remainingHeaderBytes) break
+    if (buffer.length - offset < remainingHeaderBytes) return { frames, tornStart: start }
     offset += remainingHeaderBytes
     for (;;) {
-      if (buffer.length - offset < 3) break
+      if (buffer.length - offset < 3) return { frames, tornStart: start }
       const blockHeader = buffer.readUIntLE(offset, 3)
       offset += 3
       const lastBlock = (blockHeader & 1) !== 0
       const blockType = (blockHeader >>> 1) & 0x03
       const blockSize = blockHeader >>> 3
-      if (blockType === 0x03) break
+      if (blockType === 0x03) {
+        throw new Error(`corrupt Zstandard session log: reserved block type at byte ${offset - 3}`)
+      }
       const payloadBytes = blockType === 0x01 ? 1 : blockSize
-      if (buffer.length - offset < payloadBytes) break
+      if (buffer.length - offset < payloadBytes) return { frames, tornStart: start }
       offset += payloadBytes
       if (lastBlock) break
     }
     if (checksum) {
-      if (buffer.length - offset < 4) break
+      if (buffer.length - offset < 4) return { frames, tornStart: start }
       offset += 4
     }
     frames.push({ start, end: offset })
   }
-  return frames
+  return { frames }
+}
+
+/** 只保留解压前缀中以换行结束的完整 JSONL 记录。 */
+function completeJsonlPrefix(buffer: Buffer): Buffer {
+  const newline = buffer.lastIndexOf(0x0A)
+  return newline < 0 ? Buffer.alloc(0) : buffer.subarray(0, newline + 1)
 }
 
 /** 读取日志原文（JSONL 文本）：`.zstd` 逐 frame 解压，plaintext 直读。 */
 export function readLogContent(meta: SessionLogMeta): string | undefined {
+  let buffer: Buffer
   try {
-    const buffer = readFileSync(meta.path)
-    if (meta.path.endsWith('.zstd')) {
-      const frames = scanZstdFrames(buffer)
-      if (frames.length === 0) return undefined
-      const parts: Buffer[] = []
-      for (const frame of frames) {
-        try {
-          parts.push(zstdDecompressSync(buffer.subarray(frame.start, frame.end)))
-        } catch {
-          // 单个 frame 损坏不阻塞其余内容
-        }
-      }
-      if (parts.length === 0) return undefined
-      return Buffer.concat(parts).toString('utf8')
-    }
-    return buffer.toString('utf8')
+    buffer = readFileSync(meta.path)
   } catch {
     return undefined
   }
+  if (meta.path.endsWith('.zstd')) {
+    const { frames, tornStart } = scanZstdFrameStream(buffer)
+    const parts: Buffer[] = []
+    for (const frame of frames) {
+      try {
+        parts.push(zstdDecompressSync(buffer.subarray(frame.start, frame.end)))
+      } catch (cause) {
+        throw new Error(
+          `corrupt Zstandard session log: failed to decompress complete frame at byte ${frame.start}`,
+          { cause },
+        )
+      }
+    }
+    if (tornStart !== undefined) {
+      try {
+        const recovered = zstdDecompressSync(buffer.subarray(tornStart), {
+          finishFlush: constants.ZSTD_e_flush,
+        })
+        const committed = completeJsonlPrefix(recovered)
+        if (committed.length > 0) parts.push(committed)
+      } catch {
+        // torn frame 可能尚未产出明文；完整前序 frame 仍然可用
+      }
+    }
+    if (parts.length === 0) return undefined
+    return Buffer.concat(parts).toString('utf8')
+  }
+  return buffer.toString('utf8')
 }
 
 /** 北京时间日历日 `YYYY-MM-DD`。 */
@@ -228,7 +260,9 @@ function emptyDay(): MutableDaySpend {
 }
 
 interface PricedEvent {
-  /** 该 assistant/message 发生时生效的 request/header 模型。 */
+  /** 该 assistant/message 实际使用的 provider；旧日志未知时为空。 */
+  provider: string
+  /** 该 assistant/message 实际使用的模型。 */
   model: string
   time: number
   cost: number
@@ -239,11 +273,12 @@ interface PricedEvent {
 }
 
 /**
- * 回放一份会话日志原文：`request/header` 记录当前模型，`assistant/message`
- * 携带的 usage 按官方价格计价。单个坏行/坏事件跳过，不中断整个回放。
+ * 回放一份会话日志原文：`request/header` 记录当前路由，`assistant/message`
+ * 携带的 usage 仅在官方 DeepSeek 路由上按官方价格计价。单个坏行/坏事件跳过。
  */
 export function replayLogContent(content: string, price: (model: string, timeMs: number) => PriceAtResult): PricedEvent[] {
   const out: PricedEvent[] = []
+  let currentProvider = ''
   let currentModel = 'unknown'
   for (const line of content.split('\n')) {
     if (line === '') continue
@@ -256,8 +291,10 @@ export function replayLogContent(content: string, price: (model: string, timeMs:
     if (event === null || typeof event !== 'object') continue
     if (event.type === 'request/header') {
       try {
-        const data = event.data as { header?: { config?: { model?: unknown } } }
+        const data = event.data as { header?: { config?: { provider?: unknown; model?: unknown } } }
+        const provider = data?.header?.config?.provider
         const model = data?.header?.config?.model
+        if (typeof provider === 'string' && provider !== '') currentProvider = provider
         if (typeof model === 'string' && model !== '') currentModel = model
       } catch {
         // 结构异常时沿用上一模型
@@ -265,7 +302,14 @@ export function replayLogContent(content: string, price: (model: string, timeMs:
       continue
     }
     if (event.type !== 'assistant/message') continue
-    const data = event.data as { usage?: { inputTokens?: unknown; cacheReadTokens?: unknown; outputTokens?: unknown } } | undefined
+    const data = event.data as {
+      message?: { source?: { provider?: unknown; model?: unknown } }
+      usage?: { inputTokens?: unknown; cacheReadTokens?: unknown; outputTokens?: unknown }
+    } | undefined
+    const messageProvider = data?.message?.source?.provider
+    const messageModel = data?.message?.source?.model
+    const eventProvider = typeof messageProvider === 'string' && messageProvider !== '' ? messageProvider : currentProvider
+    const eventModel = typeof messageModel === 'string' && messageModel !== '' ? messageModel : currentModel
     const usage = data?.usage
     if (usage === null || typeof usage !== 'object') continue
     const time = typeof event.time === 'number' && Number.isFinite(event.time) ? event.time : Date.now()
@@ -275,10 +319,13 @@ export function replayLogContent(content: string, price: (model: string, timeMs:
         cacheReadTokens: toFinite(usage.cacheReadTokens),
         outputTokens: toFinite(usage.outputTokens),
       },
-      price(currentModel, time),
+      eventProvider === '' || eventProvider === 'deepseek' || eventProvider === 'deepseek-official'
+        ? price(eventModel, time)
+        : { ...ZERO_PRICE, mode: 'flat' },
     )
     out.push({
-      model: currentModel,
+      provider: eventProvider,
+      model: eventModel,
       time,
       cost: breakdown.cost,
       costUsd: breakdown.costUsd,

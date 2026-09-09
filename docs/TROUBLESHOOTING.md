@@ -13,7 +13,18 @@ The command requires `pnpm` on `PATH`. Configure pnpm and rerun from the tarball
 
 ## Balance is unavailable
 
-Configure a valid `DEEPSEEK_API_KEY` through DSH credentials and check network access. Never paste keys into reports.
+Configure a valid `DEEPSEEK_API_KEY` through DSH credentials and check network access. Never paste keys into reports. Direct unauthenticated requests to `/api/whale-pet/state` now intentionally return `401`; inspect data from the authenticated DSH page, not a bare curl.
+
+## Browser data routes return 401/403
+
+Refresh the authenticated DSH GUI and confirm its Host/Origin matches the running local server. Do not disable the trust fence and do not pass browser cookies or companion tokens in query parameters. Health and immutable JavaScript assets remain public; account/session data does not.
+
+## Desktop companion says pairing is required
+
+1. In the authenticated Web pet settings, generate a fresh grant for that device.
+2. Import it once with `DSH_WHALE_PET_COMPANION_TOKEN` as documented in the companion README, then clear that environment variable.
+3. Keep the base URL loopback (`127.0.0.1`, `localhost`, or `[::1]`); remote/proxied sockets are rejected even if the Host header is forged.
+4. If the token was revoked or the protected store is corrupt, delete the local stored token and pair again. Never paste a token into an issue.
 
 ## Spend remains zero after upgrade
 
@@ -47,13 +58,15 @@ Restart the web profile, hard-refresh the browser, verify health, and inspect th
 
 1. Check the settings dialog status: import, Core loading, or renderer errors are shown there.
 2. Confirm the ZIP contains one `.model3.json` and all referenced files (`.moc3`, textures, physics, motions), and that entries are not duplicate or path-escaped.
-3. For URL import, the server must allow browser CORS on the JSON and all assets; otherwise fetches are blocked.
-4. Headless/software environments without WebGL keep the default PNG; a GPU-enabled browser is required for Live2D rendering.
-5. Clicking the model plays hit-area motions (`TapBody` by default); small models may not declare hit areas.
+3. For URL import, the server must allow browser CORS on the JSON and all assets; otherwise fetches are blocked. Imports over 256 files, 32 MiB per file, or 128 MiB total are intentionally rejected.
+4. ZIP parsing now runs in a module Worker. A 404 for `/dsh-whale-pet-live2d-zip-worker.js` means the installed package/build is incomplete; rebuild/reinstall and restart the Web profile.
+5. Headless/software environments without WebGL keep the default PNG; a GPU-enabled browser is required for Live2D rendering.
+6. Clicking the model plays hit-area motions (`TapBody` by default); small models may not declare hit areas.
+7. If an older `0.4.0` client reports `Invalid value of \`0\` passed to \`checkMaxIfStatementsInShader\`` after removing and re-importing a model, upgrade to `0.4.1` and refresh. `0.4.1` gives every renderer a fresh canvas instead of reusing a PIXI-destroyed WebGL context.
 
 ## Live2D model disappears after refresh
 
-A saved model restores from IndexedDB. Clear browser storage for the site or use "移除模型" if a stale record blocks recovery; importing again replaces the record atomically.
+A saved model restores from one atomic IndexedDB `active` record. Clear browser storage for the site or use “移除模型” if a stale record blocks recovery; importing again replaces config and assets together. The obsolete localStorage model marker is no longer used.
 
 ## Safe issue reports
 

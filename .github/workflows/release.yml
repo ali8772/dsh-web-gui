@@ -8,7 +8,33 @@ permissions:
   contents: write
 
 jobs:
+  companions:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Validate Rust companion
+        shell: bash
+        run: |
+          cargo fmt --manifest-path windows-rust/Cargo.toml --check
+          cargo check --manifest-path windows-rust/Cargo.toml --locked
+          cargo test --manifest-path windows-rust/Cargo.toml --locked
+          cargo clippy --manifest-path windows-rust/Cargo.toml --locked -- -D warnings
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate PowerShell pairing contract
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path windows/WhaleMaidPet.ps1), [ref]$null, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
+          node --test test/companion-client.test.mjs
+
   release:
+    needs: companions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,8 +44,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - run: npm run typecheck
       - run: npm test
       - run: npm run check
+      - run: npm run check:size
+      - run: npm run audit:prod
       - name: Pack and checksum
         run: |
           npm pack

@@ -17,7 +17,7 @@ async function loadTasksModule(temp) {
     bundle: true,
     format: 'esm',
     platform: 'node',
-    target: 'node20',
+    target: 'node24',
     outfile,
     external: ['node:*'],
   })
@@ -101,14 +101,86 @@ test('sessionSummary prices mixed-model usage per model instead of using the las
     assert.equal(summary.cost, 4, 'latest turn should sum Flash ¥1 + Pro ¥3')
     assert.equal(summary.totalCost, 8, 'session should also include Reasoner ¥4')
     assert.deepEqual(summary.models, [
-      { model: 'deepseek-v4-flash', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 1, costUsd: 0.14 },
-      { model: 'deepseek-v4-pro', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 3, costUsd: 0.435 },
+      { provider: '', model: 'deepseek-v4-flash', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 1, costUsd: 0.14 },
+      { provider: '', model: 'deepseek-v4-pro', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 3, costUsd: 0.435 },
     ])
     assert.deepEqual(summary.totalModels, [
-      { model: 'deepseek-reasoner', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 4, costUsd: 0.55 },
-      { model: 'deepseek-v4-flash', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 1, costUsd: 0.14 },
-      { model: 'deepseek-v4-pro', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 3, costUsd: 0.435 },
+      { provider: '', model: 'deepseek-reasoner', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 4, costUsd: 0.55 },
+      { provider: '', model: 'deepseek-v4-flash', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 1, costUsd: 0.14 },
+      { provider: '', model: 'deepseek-v4-pro', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 3, costUsd: 0.435 },
     ])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('sessionSummary keeps providers with the same model id in separate usage rows', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-provider-summary-test-'))
+  try {
+    const sessionId = 'provider-summary-session'
+    const logPath = join(temp, 'session.jsonl')
+    const { sessionSummary } = await loadTasksModule(temp)
+    const logIndex = new Map([[sessionId, { id: sessionId, path: logPath }]])
+    const pricedAt = Date.parse('2025-06-01T02:00:00.000Z')
+    await writeFile(logPath, [
+      line('assistant/message', {
+        message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-chat' } },
+        usage: { inputTokens: 1_000_000, outputTokens: 0 },
+      }, pricedAt),
+      line('assistant/message', {
+        message: { source: { kind: 'model', provider: 'openai', model: 'deepseek-chat' } },
+        usage: { inputTokens: 1_000_000, outputTokens: 0 },
+      }, pricedAt),
+    ].join(''), 'utf8')
+
+    const summary = sessionSummary(logIndex, sessionId)
+    assert.deepEqual(summary.models, [
+      { provider: 'deepseek-official', model: 'deepseek-chat', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 2, costUsd: 0.28 },
+      { provider: 'openai', model: 'deepseek-chat', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 0, costUsd: 0 },
+    ])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('sessionSummary keeps unknown-model tokens but reports zero estimated cost', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-unknown-summary-test-'))
+  try {
+    const sessionId = 'unknown-model-session'
+    const logPath = join(temp, 'session.jsonl')
+    const { sessionSummary } = await loadTasksModule(temp)
+    const logIndex = new Map([[sessionId, { id: sessionId, path: logPath }]])
+    await writeFile(logPath, [
+      line('user/message', { message: 'latest turn' }),
+      line('assistant/message', {
+        message: { source: { kind: 'model', provider: 'openai', model: 'gpt-5' } },
+        usage: { inputTokens: 1_000_000, cacheReadTokens: 200_000, outputTokens: 300_000 },
+      }, Date.parse('2025-06-01T02:00:00.000Z')),
+    ].join(''), 'utf8')
+
+    const summary = sessionSummary(logIndex, sessionId)
+    assert.equal(summary.found, true)
+    assert.equal(summary.model, 'gpt-5')
+    assert.equal(summary.calls, 1)
+    assert.equal(summary.inputTokens, 1_000_000)
+    assert.equal(summary.cost, 0)
+    assert.equal(summary.totalCost, 0)
+    assert.deepEqual(summary.models, [
+      { provider: 'openai', model: 'gpt-5', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 200_000, outputTokens: 300_000, cost: 0, costUsd: 0 },
+    ])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('projection caches stay within the documented hard limit under many session ids', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-task-cache-'))
+  try {
+    const { taskProjectionStats } = await loadTasksModule(temp)
+    assert.equal(typeof taskProjectionStats, 'function')
+    const stats = taskProjectionStats()
+    assert.equal(stats.progressEntries <= 400, true)
+    assert.equal(stats.summaryEntries <= 400, true)
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

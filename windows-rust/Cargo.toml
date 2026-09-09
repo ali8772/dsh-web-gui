@@ -34,6 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Misc
 anyhow = "1"
+keyring = { version = "3", features = ["windows-native"] }
 
 # GUI (cross-platform; Windows transparent window via win32 in cfg(windows))
 egui = "0.29"

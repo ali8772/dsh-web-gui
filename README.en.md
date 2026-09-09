@@ -8,7 +8,7 @@
 
 > The screenshot uses fixed example data (balance ¥88.88) and contains no real account information.
 
-## v0.4.0 highlights
+## v0.4.1 highlights
 
 ### Live2D model import and interaction
 
@@ -18,8 +18,16 @@
 - Supports Cubism 3/4/5 `.model3.json`; legacy Cubism 2 `.model.json` is not supported.
 - Interactions: mouse movement drives eye/head focus, clicking a hit area plays its same-named motion (commonly `TapBody`), and the settings panel can play a random motion or expression; models also provide idle motions, eye blink, breath, and physics.
 - Opening settings with the `⚙️` button does not cycle pages. The settings panel also includes a pet size slider (50%–200%) that scales only the pet model — bubbles and dialogs keep their size — persists the choice, and offers a one-click reset.
-- On import failure, incomplete assets, or missing WebGL, the default PNG stays active and the plugin never fails to start; a model can be removed at any time.
+- On import failure, incomplete assets, or missing WebGL, the default PNG stays active and the plugin never fails to start. A model can be removed and re-imported in the same page; each Live2D mount gets its own canvas so it never reuses a WebGL context destroyed by PIXI.
 - The official Cubism Core is served locally by the plugin via a same-origin route, so the runtime does not depend on an external CDN. The PIXI/Live2D renderer loads only when Live2D is actually used.
+- ZIP extraction and validation run in a dedicated Worker, and the Live2D ticker pauses while the page is hidden. URL imports allow at most 256 assets, 32 MiB per file, 128 MiB total, and four concurrent requests.
+- Model metadata and assets now share one atomic IndexedDB record rather than a localStorage pointer that could diverge.
+
+### Secure desktop-companion pairing
+
+- The `⚙️` settings dialog has a “desktop companion” section that creates an independent PowerShell/Rust token per device. Plaintext is shown once; the host stores only a verifier.
+- Grants can be revoked individually. Companion data routes require a loopback peer, trusted Host/Origin headers, and `Authorization: Bearer …`.
+- PowerShell protects its token with CurrentUser DPAPI; Rust uses Windows Credential Manager. Never put a token in a URL, query string, log, or screenshot.
 
 > Only import models you are entitled to use. The independent Cubism Core license and source are documented in [ASSET_NOTICE.md](ASSET_NOTICE.md).
 
@@ -48,12 +56,12 @@
 
 ## Install
 
-Requirements: Node.js 20+, a working DSH CLI, and `pnpm` on `PATH`.
+Requirements: Node.js 24+, a working DSH CLI, and `pnpm` on `PATH`.
 
-Download `dsh-whale-pet-0.4.0.tgz` from [Releases](https://github.com/ali8772/dsh-web-gui/releases):
+Download `dsh-whale-pet-0.4.1.tgz` from [Releases](https://github.com/ali8772/dsh-web-gui/releases):
 
 ```sh
-dsh plugin --profile web add ./dsh-whale-pet-0.4.0.tgz
+dsh plugin --profile web add ./dsh-whale-pet-0.4.1.tgz
 ```
 
 Restart `dsh web`, then refresh the browser. Do not add a second insertion to the profile patch; the packaged bundle activates itself. See [docs/INSTALL.md](docs/INSTALL.md) for upgrades, removal, and verification.
@@ -63,12 +71,15 @@ Restart `dsh web`, then refresh the browser. Do not add a second insertion to th
 | Path | Purpose |
 |---|---|
 | `GET /api/whale-pet/health` | Health probe returning `{ plugin, version, ok }` |
-| `GET /api/whale-pet/state` | Balance plus today/seven-day spend and call counts |
-| `POST /api/whale-pet/tasks` | Live task progress and awaiting-user state |
+| `GET /api/whale-pet/state` | Balance plus today/seven-day spend and call counts; DSH browser-authenticated |
+| `POST /api/whale-pet/tasks` | Live task progress and awaiting-user state; up to 32 unique session IDs |
 | `POST /api/whale-pet/task-summary` | Per-session token and cost summary, priced per model |
 | `GET /api/whale-pet/opencode-go` | OpenCode Go plan quota |
+| `GET/POST /api/whale-pet/companions*` | Browser-authenticated grant list, issue, and revoke operations |
+| `/dsh-whale-pet/companion/v1/*` | Loopback + Bearer state/tasks/task-summary/opencode-go companion routes |
 | `GET /dsh-whale-pet-live2dcubismcore.min.js` | Local Cubism Core runtime, loaded only when Live2D is used |
 | `GET /dsh-whale-pet-live2d.js` | Dynamic PIXI/Live2D renderer |
+| `GET /dsh-whale-pet-live2d-zip-worker.js` | ZIP extraction and model-validation Worker |
 
 ## Data and privacy
 
@@ -76,7 +87,9 @@ Restart `dsh web`, then refresh the browser. Do not add a second insertion to th
 - The balance ledger at `$DSH_HOME/whale-pet/balance-spend.json` stores only currency, the last observed balance, and per-day accumulated decreases.
 - Session logs are used only for call counts, task progress, and per-model pricing.
 - Imported Live2D models stay in the current browser's IndexedDB and are not uploaded to the plugin host or third parties. During URL import the browser fetches directly from the model server you enter.
-- ZIP extraction is limited to 2,048 files and 256 MiB uncompressed, and rejects absolute URLs/paths and references escaping the archive root.
+- ZIP extraction is limited to 2,048 files and 256 MiB uncompressed, and rejects absolute URLs/paths and references escaping the archive root; URL imports have separate 256-file/32-MiB-per-file/128-MiB-total budgets.
+- Private browser routes apply the DSH Host/Origin and browser-session checks plus a 64 KiB body cap. A corrupt session log is isolated to one batch row rather than failing healthy rows.
+- A companion token appears in plaintext only in its issue response; DSH credentials store a verifier, and the browser never persists the token.
 
 Never commit credentials, profile files, session logs, real account screenshots, or Live2D models you are not entitled to distribute.
 
@@ -84,17 +97,18 @@ Never commit credentials, profile files, session logs, real account screenshots,
 
 ```sh
 curl http://127.0.0.1:3080/api/whale-pet/health
+# Private state/task routes require the authenticated DSH browser; bare curl should get 401
 ```
 
 Expected:
 
 ```json
-{"plugin":"dsh-whale-pet","version":"0.4.0","ok":true}
+{"plugin":"dsh-whale-pet","version":"0.4.1","ok":true}
 ```
 
 ## Windows companions
 
-`windows/` is an experimental PowerShell/WPF companion and `windows-rust/` is an independent Rust experiment; neither is part of the DSH bundle or shipped in the plugin package. See their READMEs.
+`windows/` is an experimental PowerShell/WPF companion and `windows-rust/` is an independent Rust experiment; neither is part of the DSH bundle or shipped in the plugin package. Create a per-device companion grant in Web settings, then import its token once as described in each README.
 
 ## Development
 
@@ -102,7 +116,10 @@ Expected:
 npm ci
 npm run build
 npm test
+npm run typecheck
 npm run check
+npm run check:size
+npm run audit:prod
 npm pack --dry-run
 ```
 

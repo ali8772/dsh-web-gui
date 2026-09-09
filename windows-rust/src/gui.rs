@@ -54,10 +54,14 @@ pub async fn run(client: DshClient, _local_addr: std::net::SocketAddr) -> anyhow
                     state.cycle_page();
                 }
                 if resp.drag_started() {
-                    state.dragging.store(true, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .dragging
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 if !resp.dragged() {
-                    state.dragging.store(false, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .dragging
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                 }
 
                 ctx.request_repaint_after(Duration::from_millis(100));

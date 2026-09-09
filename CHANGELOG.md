@@ -5,6 +5,36 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ## [Unreleased]
 
 ### Fixed
+- Require Node.js 24 consistently because the host session reader uses Node's Zstandard API.
+- Recover newline-complete task and usage events from a torn final Zstandard session-log frame.
+- Track all running sessions separately from the ten-row display window, preventing reordering and parent grouping from producing false completion dialogs.
+- Leave unknown/non-DeepSeek models unpriced and prefer each assistant message's actual model provenance.
+
+### Added
+- Protect every private browser route with DSH Host/Origin and authenticated-session checks, bounded JSON bodies, stable errors, deduplicated task IDs, and corrupt-session row isolation.
+- Add independently revocable desktop-companion grants with one-time plaintext `wpg1` tokens, verifier-only credential storage, loopback/Host/Origin fencing, and Bearer-only companion routes.
+- Add browser pairing management; PowerShell stores tokens with CurrentUser DPAPI and Rust uses Windows Credential Manager.
+- Add one-lane polling with coalesced triggers, abort-on-dispose, shared bounded session projection, and hard limits on task projection caches.
+- Move ZIP parsing/validation into a transferable module Worker; add bounded-concurrency URL downloads and explicit per-file/total resource limits.
+- Add keyboard-operable task rows, modal semantics with Escape/focus return, polite status announcements, focus indicators, and reduced-motion styles.
+- Add per-artifact bundle budgets and canonical production-audit gates to local packaging, CI, and releases.
+
+### Changed
+- Add strict TypeScript checking to local packaging, CI, and release validation.
+- Store the active Live2D config and assets together in one atomic IndexedDB record, eliminating the localStorage marker split.
+- Pause the PIXI ticker and idle motion loop while the page is hidden.
+- Serve immutable local Live2D runtime assets with long-lived caching while all private JSON responses remain `no-store`.
+
+### Security
+- Bound URL model imports to 256 files, 32 MiB per file, 128 MiB total, and four concurrent downloads.
+- Never place companion plaintext tokens in query parameters, cookies, logs, or browser persistence; revoke grants independently from settings.
+- Document the narrowly allowed upstream `pixi-live2d-display -> gh-pages` audit advisory without applying a destructive renderer downgrade.
+
+## [0.4.1] - 2026-09-03
+
+### Fixed
+- Restoring the default Whale-chan and importing Live2D again no longer reuses a canvas whose WebGL context PIXI destroyed. Every renderer now owns a fresh canvas that is removed with the renderer, fixing `Invalid value of \`0\` passed to \`checkMaxIfStatementsInShader\``.
+- Replacing one active Live2D model with another now disposes the previous renderer before mounting the replacement, preventing overlapping PIXI applications and canvas leaks.
 - Pet size scaling now uses the model center as the scaling origin.
 - The bubble/dialog tracks the model top as the pet scales up or down, keeping the 4px gap instead of overlapping the model.
 - The pager (mode dots) tracks the model bottom and moves with the pet scale, instead of staying fixed at the pet container edge.
@@ -85,7 +115,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Added
 - Initial draggable pet with balance, today spend, seven-day spend, and local estimation.
 
-[Unreleased]: https://github.com/ali8772/dsh-web-gui/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ali8772/dsh-web-gui/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/ali8772/dsh-web-gui/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ali8772/dsh-web-gui/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/ali8772/dsh-web-gui/compare/v0.2.1...v0.2.2

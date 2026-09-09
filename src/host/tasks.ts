@@ -11,13 +11,13 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
-import { zstdDecompressSync } from 'node:zlib'
+import { constants, zstdDecompressSync } from 'node:zlib'
 import { createPriceCache } from './pricing.ts'
 import {
   fileRevision,
   readLogContent,
   replayLogContent,
-  scanZstdFrames,
+  scanZstdFrameStream,
   type SessionLogMeta,
 } from './sessions.ts'
 
@@ -43,12 +43,7 @@ export interface TaskProgress {
   readonly awaitingUser: boolean
 }
 
-interface Cursor {
-  kind: 'zstd' | 'plain'
-  rev: string
-  /** 已处理到的完整 frame 数 / 已处理文本字节数。 */
-  processedFrames: number
-  processedBytes: number
+interface CursorState {
   todoTotal: number
   todoDone: number
   todoCurrent: string | null
@@ -56,8 +51,19 @@ interface Cursor {
   lastStep: { turn: number; step: number } | null
   lastTurn: number | null
   lastEventType: string | null
-  /** 最近一次事件是否需要用户操作（ask_user_question / approval）。 */
   awaitingUser: boolean
+}
+
+interface Cursor extends CursorState {
+  kind: 'zstd' | 'plain'
+  rev: string
+  /** 已提交到的完整 frame 数 / 已处理文本字节数。 */
+  processedFrames: number
+  processedBytes: number
+  /** 仅含完整 frame 的状态；torn frame 恢复结果每次从此检查点重放。 */
+  committed: CursorState | null
+  /** 上一次轮询是否包含 provisional torn frame。 */
+  hadTornFrame: boolean
 }
 
 /** 我们关心的低流量事件类型；其余（chunk/reasoning 等）只更新 lastEventType。 */
@@ -81,6 +87,8 @@ function freshCursor(kind: 'zstd' | 'plain'): Cursor {
     rev: '',
     processedFrames: 0,
     processedBytes: 0,
+    committed: null,
+    hadTornFrame: false,
     todoTotal: 0,
     todoDone: 0,
     todoCurrent: null,
@@ -145,6 +153,23 @@ function toInt(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null
 }
 
+function snapshotState(cursor: Cursor): CursorState {
+  return {
+    todoTotal: cursor.todoTotal,
+    todoDone: cursor.todoDone,
+    todoCurrent: cursor.todoCurrent,
+    lastTool: cursor.lastTool,
+    lastStep: cursor.lastStep,
+    lastTurn: cursor.lastTurn,
+    lastEventType: cursor.lastEventType,
+    awaitingUser: cursor.awaitingUser,
+  }
+}
+
+function restoreState(cursor: Cursor, state: CursorState): void {
+  Object.assign(cursor, state)
+}
+
 /** 增量刷新一个会话的游标；返回是否发生变化。 */
 function refreshCursor(meta: SessionLogMeta, cursor: Cursor): boolean {
   let stat: ReturnType<typeof statSync>
@@ -162,7 +187,7 @@ function refreshCursor(meta: SessionLogMeta, cursor: Cursor): boolean {
     return false
   }
   if (meta.path.endsWith('.zstd') && cursor.kind === 'zstd') {
-    const frames = scanZstdFrames(buffer)
+    const { frames, tornStart } = scanZstdFrameStream(buffer)
     if (frames.length < cursor.processedFrames) {
       // 日志被重写（罕见）：整段重放
       cursor.processedFrames = 0
@@ -174,15 +199,41 @@ function refreshCursor(meta: SessionLogMeta, cursor: Cursor): boolean {
       cursor.lastTurn = null
       cursor.lastEventType = null
       cursor.awaitingUser = false
+      cursor.committed = null
+      cursor.hadTornFrame = false
+    }
+    const formerTornFrameCompleted = cursor.hadTornFrame && frames.length > cursor.processedFrames
+    if (cursor.committed !== null) restoreState(cursor, cursor.committed)
+    if (formerTornFrameCompleted && cursor.processedFrames > 0) {
+      // The prior torn frame is now complete, so replay it from its frame boundary.
+      cursor.processedFrames -= 1
     }
     for (const frame of frames.slice(cursor.processedFrames)) {
+      let text: string
       try {
-        processLogText(zstdDecompressSync(buffer.subarray(frame.start, frame.end)).toString('utf8'), cursor)
-      } catch {
-        // 单个 frame 损坏不阻塞
+        text = zstdDecompressSync(buffer.subarray(frame.start, frame.end)).toString('utf8')
+      } catch (cause) {
+        throw new Error(
+          `corrupt Zstandard session log: failed to decompress complete frame at byte ${frame.start}`,
+          { cause },
+        )
       }
+      processLogText(text, cursor)
     }
     cursor.processedFrames = frames.length
+    cursor.committed = snapshotState(cursor)
+    cursor.hadTornFrame = tornStart !== undefined
+    if (tornStart !== undefined) {
+      try {
+        const recovered = zstdDecompressSync(buffer.subarray(tornStart), {
+          finishFlush: constants.ZSTD_e_flush,
+        }).toString('utf8')
+        const newline = recovered.lastIndexOf('\n')
+        if (newline >= 0) processLogText(recovered.slice(0, newline + 1), cursor)
+      } catch {
+        // torn frame 可能尚未产出明文；完整 frame 的状态仍然可用
+      }
+    }
   } else if (!meta.path.endsWith('.zstd') && cursor.kind === 'plain') {
     const text = buffer.toString('utf8')
     const start = Math.min(cursor.processedBytes, text.length)
@@ -205,7 +256,14 @@ function refreshCursor(meta: SessionLogMeta, cursor: Cursor): boolean {
   return true
 }
 
+const MAX_PROJECTION_ENTRIES = 400
+const EVICT_PROJECTION_ENTRIES = 200
 const cursors = new Map<string, Cursor>()
+
+function trimProjectionCache<T>(cache: Map<string, T>): void {
+  if (cache.size <= MAX_PROJECTION_ENTRIES) return
+  for (const key of [...cache.keys()].slice(0, EVICT_PROJECTION_ENTRIES)) cache.delete(key)
+}
 
 /** 计算单个会话的进度快照（带增量游标缓存）。 */
 export function progressForSession(logIndex: ReadonlyMap<string, SessionLogMeta>, id: string): TaskProgress {
@@ -218,6 +276,7 @@ export function progressForSession(logIndex: ReadonlyMap<string, SessionLogMeta>
   if (cursor === undefined) {
     cursor = freshCursor(meta.path.endsWith('.zstd') ? 'zstd' : 'plain')
     cursors.set(id, cursor)
+    trimProjectionCache(cursors)
   }
   refreshCursor(meta, cursor)
 
@@ -255,6 +314,7 @@ export function progressForSession(logIndex: ReadonlyMap<string, SessionLogMeta>
 
 /** 单个模型在某个统计范围内的 token/费用汇总。 */
 export interface ModelUsageSummary {
+  provider: string
   model: string
   calls: number
   inputTokens: number
@@ -268,7 +328,7 @@ export interface ModelUsageSummary {
 export interface SessionSummary {
   id: string
   found: boolean
-  /** 模型名（取自最新 request/header）。 */
+  /** 最近实际使用的模型（优先 assistant message provenance，回退 request/header）。 */
   model: string
   /** 本次对话：计价请求条数（最近一次 user/message 之后的 assistant/message）。 */
   calls: number
@@ -308,10 +368,11 @@ type PricedUsage = ReturnType<typeof replayLogContent>[number]
 function usageByModel(events: readonly PricedUsage[]): ModelUsageSummary[] {
   const grouped = new Map<string, ModelUsageSummary>()
   for (const event of events) {
-    let row = grouped.get(event.model)
+    const route = `${event.provider}\u0000${event.model}`
+    let row = grouped.get(route)
     if (row === undefined) {
-      row = { model: event.model, calls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, costUsd: 0 }
-      grouped.set(event.model, row)
+      row = { provider: event.provider, model: event.model, calls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, costUsd: 0 }
+      grouped.set(route, row)
     }
     row.calls += 1
     row.inputTokens += event.inputTokens
@@ -380,6 +441,8 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
   }
 
   // 计算本次对话（最近一次 user/message 之后）
+  let provider = ''
+  let providerAtLastUser = ''
   let model = 'unknown'
   let modelAtLastUser = 'unknown'
   let lastUserMessageIndex = -1
@@ -388,13 +451,28 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
     const line = lines[i]
     if (line === '') continue
     try {
-      const event = JSON.parse(line) as { type?: string; data?: { header?: { config?: { model?: unknown } } } }
+      const event = JSON.parse(line) as {
+        type?: string
+        data?: {
+          header?: { config?: { provider?: unknown; model?: unknown } }
+          message?: { source?: { provider?: unknown; model?: unknown } }
+        }
+      }
       if (event.type === 'request/header') {
+        const p = event.data?.header?.config?.provider
         const m = event.data?.header?.config?.model
+        if (typeof p === 'string' && p !== '') provider = p
+        if (typeof m === 'string' && m !== '') model = m
+      }
+      if (event.type === 'assistant/message') {
+        const p = event.data?.message?.source?.provider
+        const m = event.data?.message?.source?.model
+        if (typeof p === 'string' && p !== '') provider = p
         if (typeof m === 'string' && m !== '') model = m
       }
       if (event.type === 'user/message') {
         lastUserMessageIndex = i
+        providerAtLastUser = provider
         modelAtLastUser = model
       }
     } catch {
@@ -410,8 +488,11 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
   let costUsd = 0
   let currentEvents: PricedUsage[]
   if (lastUserMessageIndex >= 0) {
-    // 切片后的 replay 看不到更早的 request/header，补一条边界模型头避免按 unknown 兜底计价。
-    const modelHeader = JSON.stringify({ type: 'request/header', data: { header: { config: { model: modelAtLastUser } } } })
+    // 切片后的 replay 看不到更早的 request/header，补一条边界模型头供缺少 message provenance 的旧日志继承。
+    const modelHeader = JSON.stringify({
+      type: 'request/header',
+      data: { header: { config: { provider: providerAtLastUser, model: modelAtLastUser } } },
+    })
     const contentAfter = `${modelHeader}\n${lines.slice(lastUserMessageIndex).join('\n')}`
     currentEvents = replayLogContent(contentAfter, (m, t) => price(m, t))
     for (const event of currentEvents) {
@@ -452,9 +533,11 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
     totalModels: usageByModel(totalEvents),
   }
   summaryCache.set(id, { rev, summary })
-  if (summaryCache.size > 400) {
-    const keys = [...summaryCache.keys()]
-    for (const key of keys.slice(0, 200)) summaryCache.delete(key)
-  }
+  trimProjectionCache(summaryCache)
   return summary
+}
+
+/** Cache budget observability for diagnostics and contract tests. */
+export function taskProjectionStats(): { progressEntries: number; summaryEntries: number } {
+  return { progressEntries: cursors.size, summaryEntries: summaryCache.size }
 }

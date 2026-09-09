@@ -34,21 +34,31 @@ powershell -ExecutionPolicy Bypass -File .\WhaleMaidPet.ps1
 - 按住拖动：移动并保存位置。
 - 右键：立即刷新或退出。
 
-## 数据源
+## 配对与数据源
 
-1. 首选 `http://127.0.0.1:3080/api/whale-pet/state` 的本地 DSH 插件数据。
-2. DSH 不可达时，可从 WSL DSH credentials 查询余额，并按相邻余额下降累计本地消费；首次读取只建立基线，充值不会抵扣已累计消费。
+1. 在已认证的 DSH Web 鲸鱼娘 `⚙️` 设置中，为这台设备生成独立的桌面伴侣 token。
+2. 只为首次导入打开一个 PowerShell 进程：
 
-通过环境变量配置 WSL：
+```powershell
+$env:DSH_WHALE_PET_COMPANION_TOKEN = 'wpg1.…'
+powershell -ExecutionPolicy Bypass -File .\WhaleMaidPet.ps1
+Remove-Item Env:DSH_WHALE_PET_COMPANION_TOKEN
+```
+
+脚本验证 token 格式后，用 Windows CurrentUser DPAPI 加密写入 `%APPDATA%\dsh-whale-pet\companion-token.dat`。之后它使用 `Authorization: Bearer` 请求 `http://127.0.0.1:3080/dsh-whale-pet/companion/v1/state`，无需再次设置环境变量。不要把 token 放进 URL、命令行参数、脚本、截图、日志或 Git；撤销设备后重新生成并导入。
+
+DSH 不可达或未配对时，实验性的旧降级路径仍可从 WSL DSH credentials 查询余额，并按相邻余额下降累计本地消费；首次读取只建立基线，充值不会抵扣已累计消费。建议保持降级路径禁用所需的凭据不可访问，并优先使用配对宿主。
+
+通过环境变量配置 WSL 降级路径：
 
 ```powershell
 $env:DSH_WHALE_PET_WSL_DISTRO = 'Ubuntu'
 $env:DSH_WHALE_PET_WSL_USER = 'your-wsl-user'
 ```
 
-也可用 `DSH_WHALE_PET_DSH_URL` 覆盖本地 API URL。不要把密钥写入脚本、截图、日志或 Git；凭据读取属于实验性降级路径，优先使用运行中的 DSH 宿主。
+也可用 `DSH_WHALE_PET_DSH_URL` 覆盖本地 API 基址；客户端仅接受 `http://localhost`、`http://127.0.0.1` 或 `http://[::1]` 的纯 origin（可带端口），宿主还会验证真实 loopback socket 与 Host/Origin；不要指向远程代理。不要把密钥写入脚本、截图、日志或 Git；凭据读取属于实验性降级路径，优先使用运行中的已配对 DSH 宿主。
 
-消费历史与位置保存在 `%APPDATA%\dsh-whale-pet\state.json`。
+消费历史与位置保存在 `%APPDATA%\dsh-whale-pet\state.json`；伴侣 token 单独以 DPAPI 密文保存，不写入该 JSON。
 
 ## 自检
 

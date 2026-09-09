@@ -18,7 +18,7 @@ async function withParseModule(run) {
       bundle: true,
       format: 'esm',
       platform: 'node',
-      target: 'node20',
+      target: 'node24',
       outfile,
       logLevel: 'silent',
     })
@@ -56,6 +56,17 @@ function completeZipFiles(root = 'Haru') {
     [`${root}/expressions/smile.exp3.json`]: strToU8('{}'),
   }
 }
+
+test('URL model import enforces per-file, total-byte, file-count, and concurrency budgets', async () => {
+  await withParseModule(async ({ modelImportBudget }) => {
+    assert.deepEqual(modelImportBudget(), {
+      maxFiles: 256,
+      maxFileBytes: 32 * 1024 * 1024,
+      maxTotalBytes: 128 * 1024 * 1024,
+      maxConcurrent: 4,
+    })
+  })
+})
 
 test('findModelRootZip detects the shallowest model3.json and filters macOS metadata', async () => {
   await withParseModule(async ({ findModelRootZip }) => {

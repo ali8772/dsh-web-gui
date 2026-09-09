@@ -7,7 +7,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { WhalePetWidget, attachTaskSource } from './widget.tsx'
 import style from './style.css'
 
@@ -41,7 +42,7 @@ export function apply(ctx: Context): void {
       name: 'shell.overlay',
       id: 'dsh-whale-pet',
       order: 200,
+      inject: () => ({}),
     }, WhalePetWidget),
-    'dsh-whale-pet: whale pet overlay',
   )
 }

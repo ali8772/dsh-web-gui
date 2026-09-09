@@ -1,7 +1,7 @@
 {
   "name": "dsh-whale-pet",
   "description": "DeepSeek Whale-chan pet for DSH Web GUI with balance, tasks, quotas, and importable interactive Live2D models",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -14,6 +14,7 @@
     "lib/index.js",
     "lib/client.js",
     "lib/live2d.js",
+    "lib/live2d-zip-worker.js",
     "lib/live2dcubismcore.min.js",
     "cordis.patch.yml",
     "dsh.plugin.json",
@@ -54,16 +55,23 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/live2d.js && node --check lib/live2dcubismcore.min.js",
-    "pack:plugin": "npm run build && npm test && npm run check && npm pack"
+    "typecheck": "tsc --noEmit",
+    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/live2d.js && node --check lib/live2d-zip-worker.js && node --check lib/live2dcubismcore.min.js",
+    "check:size": "node scripts/bundle-budget.mjs",
+    "audit:prod": "node scripts/audit-production.mjs",
+    "pack:plugin": "npm run build && npm test && npm run typecheck && npm run check && npm run check:size && npm run audit:prod && npm pack"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-client-connection": "*",
     "@deepseek-ai/dsh-credentials": "*",
     "@deepseek-ai/dsh-host-webserver": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
       "optional": true
     },
     "@deepseek-ai/dsh-credentials": {
@@ -74,10 +82,21 @@
     }
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-connection": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.2-rc.1",
+    "@types/node": "^24.13.3",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "esbuild": "^0.25.0",
+    "typescript": "^7.0.2"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "dependencies": {
     "fflate": "^0.8.3",

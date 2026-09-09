@@ -1,10 +1,10 @@
 {
   "name": "dsh-whale-pet",
   "description": "鲸鱼娘桌面宠物：余额、消费、任务进度、额度与可导入 Live2D 模型",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "entry": {
     "name": "dsh-whale-pet",
-    "inject": ["credentials", "webServer"]
+    "inject": ["credentials", "webServer", "connection"]
   },
   "client": {
     "platform": "web"

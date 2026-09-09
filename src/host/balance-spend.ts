@@ -8,13 +8,13 @@ const HISTORY_DAYS = 35
 const STATE_RELATIVE_PATH = join('whale-pet', 'balance-spend.json')
 
 interface Ledger {
-  readonly lastBalanceMinor: number
+  lastBalanceMinor: number
   readonly byDayMinor: Record<string, number>
 }
 
 interface StoredBalanceSpend {
   readonly version: 2
-  readonly lastCurrency: string
+  lastCurrency: string
   readonly ledgers: Record<string, Ledger>
 }
 

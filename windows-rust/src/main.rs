@@ -6,13 +6,34 @@
 use whale_pet_rust::dsh_client::DshClient;
 use whale_pet_rust::server;
 
+const TOKEN_SERVICE: &str = "dsh-whale-pet";
+const TOKEN_ACCOUNT: &str = "desktop-companion";
+
+fn companion_token() -> anyhow::Result<String> {
+    if let Ok(token) = std::env::var("DSH_WHALE_PET_COMPANION_TOKEN") {
+        let token = token.trim().to_owned();
+        if !token.is_empty() {
+            let entry = keyring::Entry::new(TOKEN_SERVICE, TOKEN_ACCOUNT)?;
+            entry.set_password(&token)?;
+            return Ok(token);
+        }
+    }
+    let entry = keyring::Entry::new(TOKEN_SERVICE, TOKEN_ACCOUNT)?;
+    entry.get_password().map_err(|_| anyhow::anyhow!(
+        "pairing required: generate a token in Whale Pet settings, then set DSH_WHALE_PET_COMPANION_TOKEN once"
+    ))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .init();
 
-    let client = DshClient::default_local();
+    let token = companion_token()?;
+    let client = DshClient::default_local(token);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let local_addr = listener.local_addr()?;
     tracing::info!(%local_addr, "starting whale-pet-rust companion");

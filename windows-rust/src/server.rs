@@ -28,7 +28,10 @@ pub struct AppState {
 }
 
 pub async fn serve(client: DshClient, listener: TcpListener) -> anyhow::Result<()> {
-    let state = AppState { client, version: env!("CARGO_PKG_VERSION") };
+    let state = AppState {
+        client,
+        version: env!("CARGO_PKG_VERSION"),
+    };
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/whale-pet/state", get(state_route))
@@ -52,7 +55,8 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "ok": true,
                 "host": h,
             })),
-        ).into_response(),
+        )
+            .into_response(),
         Ok(h) => (
             StatusCode::OK,
             Json(json!({
@@ -61,7 +65,8 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "ok": false,
                 "host": h,
             })),
-        ).into_response(),
+        )
+            .into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({
@@ -70,7 +75,8 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "ok": false,
                 "error": err.to_string(),
             })),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -87,11 +93,7 @@ async fn state_route(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn opencode_go_route(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.client.opencode_go().await {
-        Ok(usage) => (
-            StatusCode::OK,
-            Json(json!({ "ok": true, "usage": usage })),
-        )
-            .into_response(),
+        Ok(usage) => (StatusCode::OK, Json(json!({ "ok": true, "usage": usage }))).into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "ok": false, "error": err.to_string() })),
@@ -100,18 +102,21 @@ async fn opencode_go_route(State(state): State<Arc<AppState>>) -> impl IntoRespo
     }
 }
 
-async fn tasks_route(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> impl IntoResponse {
+async fn tasks_route(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
     let ids: Vec<String> = body
         .get("ids")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     match state.client.tasks(&ids).await {
-        Ok(tasks) => (
-            StatusCode::OK,
-            Json(json!({ "ok": true, "tasks": tasks })),
-        )
-            .into_response(),
+        Ok(tasks) => (StatusCode::OK, Json(json!({ "ok": true, "tasks": tasks }))).into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "ok": false, "error": err.to_string() })),

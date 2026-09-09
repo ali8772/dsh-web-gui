@@ -8,22 +8,19 @@ import {
   basename,
   findModelRootZip,
   materializeZipModel,
+  modelImportBudget,
   StoredModel,
 } from './parse'
+import { downloadModelFiles, readBoundedResponse } from './model-downloader.ts'
+import {
+  createLive2DRepository,
+  type Live2DRecord,
+} from './repository.ts'
 
 const DB_NAME = 'dsh-whale-pet-live2d'
 const STORE = 'models'
 const RECORD_KEY = 'active'
-const CONFIG_KEY = 'dsh-whale-pet:live2d'
 const MODEL_SCHEMA_VERSION = 1
-
-interface StoredRecord {
-  schemaVersion: 1
-  config: StoredModel['config']
-  modelJson: unknown
-  rootJsonPath: string
-  files: Record<string, ArrayBuffer>
-}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -38,7 +35,7 @@ function openDb(): Promise<IDBDatabase> {
   })
 }
 
-async function putRecord(record: StoredRecord): Promise<void> {
+async function putRecord(record: Live2DRecord): Promise<void> {
   const db = await openDb()
   try {
     await new Promise<void>((resolve, reject) => {
@@ -53,13 +50,13 @@ async function putRecord(record: StoredRecord): Promise<void> {
   }
 }
 
-async function getRecord(): Promise<StoredRecord | undefined> {
+async function getRecord(): Promise<Live2DRecord | undefined> {
   const db = await openDb()
   try {
     return await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readonly')
       const req = tx.objectStore(STORE).get(RECORD_KEY)
-      req.onsuccess = () => resolve(req.result as StoredRecord | undefined)
+      req.onsuccess = () => resolve(req.result as Live2DRecord | undefined)
       req.onerror = () => reject(req.error ?? new Error('模型读取失败'))
     })
   } finally {
@@ -81,46 +78,28 @@ async function clearRecord(): Promise<void> {
   }
 }
 
-export function readConfig(): StoredModel['config'] | null {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY)
-    if (raw === null) return null
-    const parsed = JSON.parse(raw) as StoredModel['config']
-    if (parsed !== null && typeof parsed === 'object'
-      && (parsed.kind === 'zip' || parsed.kind === 'url')
-      && typeof parsed.name === 'string') return parsed
-    return null
-  } catch {
-    return null
-  }
+const repository = createLive2DRepository({
+  read: getRecord,
+  write: putRecord,
+  clear: clearRecord,
+})
+
+export async function readConfig(): Promise<StoredModel['config'] | null> {
+  return repository.config()
 }
 
-function asRecord(stored: StoredModel): StoredRecord {
-  const files: Record<string, ArrayBuffer> = {}
-  for (const [path, bytes] of Object.entries(stored.files)) {
-    files[path] = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-  }
-  return {
-    schemaVersion: MODEL_SCHEMA_VERSION,
-    config: stored.config,
-    modelJson: stored.modelJson,
-    rootJsonPath: stored.rootJsonPath,
-    files,
-  }
+export async function saveStoredModel(stored: StoredModel): Promise<void> {
+  await repository.save(stored)
 }
 
-async function saveStoredModel(stored: StoredModel): Promise<void> {
-  await putRecord(asRecord(stored))
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(stored.config))
-}
-
-export interface ImportResult {
+export interface PreparedImport {
   config: StoredModel['config']
   name: string
+  stored: StoredModel
 }
 
-/** ZIP → 校验 model3.json 与所有资源 → IndexedDB 原子替换。 */
-export async function importModelFromZip(bytes: ArrayBuffer): Promise<ImportResult> {
+/** ZIP → 校验 model3.json 与所有资源；由调用方在最新操作检查后提交。 */
+export async function prepareModelFromZip(bytes: ArrayBuffer): Promise<PreparedImport> {
   const zipModel = findModelRootZip(new Uint8Array(bytes))
   if (zipModel === null) throw new Error('ZIP 中没有找到 model3.json（仅支持 Cubism 3/4/5）')
   const rootEntry = zipModel.entries.find((entry) => entry.path === zipModel.rootJsonPath)
@@ -134,12 +113,11 @@ export async function importModelFromZip(bytes: ArrayBuffer): Promise<ImportResu
   }
   const stored = materializeZipModel(zipModel, modelJson)
   stored.config.importedAt = Date.now()
-  await saveStoredModel(stored)
-  return { config: stored.config, name: stored.config.name }
+  return { config: stored.config, name: stored.config.name, stored }
 }
 
-/** URL → 下载 model3.json 及其引用资源 → IndexedDB 原子替换。 */
-export async function importModelFromUrl(input: string): Promise<ImportResult> {
+/** URL → 下载 model3.json 及其引用资源；由调用方在最新操作检查后提交。 */
+export async function prepareModelFromUrl(input: string): Promise<PreparedImport> {
   let jsonUrl: URL
   try {
     jsonUrl = new URL(input, window.location.href)
@@ -149,19 +127,33 @@ export async function importModelFromUrl(input: string): Promise<ImportResult> {
   if (!['http:', 'https:'].includes(jsonUrl.protocol)) throw new Error('模型 URL 仅支持 HTTP/HTTPS')
   if (!jsonUrl.pathname.toLowerCase().endsWith('.model3.json')) throw new Error('URL 必须指向 .model3.json')
 
+  const budget = modelImportBudget()
   const response = await fetch(jsonUrl.href, { cache: 'no-store', mode: 'cors', credentials: 'omit' })
   if (!response.ok) throw new Error(`获取模型 JSON 失败：HTTP ${response.status}`)
-  const modelJson: unknown = await response.json()
+  const jsonBytes = await readBoundedResponse(response, budget.maxFileBytes, '模型 JSON 超过单文件大小限制')
+  let modelJson: unknown
+  try {
+    modelJson = JSON.parse(new TextDecoder().decode(jsonBytes)) as unknown
+  } catch {
+    throw new Error('模型 JSON 解析失败')
+  }
   const refs = assetRefsFromModelJson(modelJson, jsonUrl.href)
   if (refs === null) throw new Error('模型 JSON 中没有可用资源')
+  if (refs.files.length > budget.maxFiles) throw new Error('模型资源文件数超过限制')
 
+  const absoluteToReference = new Map(refs.files.map((reference) => [new URL(reference, jsonUrl).href, reference]))
+  const downloaded = await downloadModelFiles([...absoluteToReference.keys()], {
+    fetch,
+    maxFiles: budget.maxFiles,
+    maxFileBytes: budget.maxFileBytes,
+    maxTotalBytes: budget.maxTotalBytes - jsonBytes.byteLength,
+    maxConcurrent: budget.maxConcurrent,
+  })
   const files: Record<string, Uint8Array> = {}
-  await Promise.all(refs.files.map(async (reference) => {
-    const absolute = new URL(reference, jsonUrl).href
-    const assetResponse = await fetch(absolute, { cache: 'no-store', mode: 'cors', credentials: 'omit' })
-    if (!assetResponse.ok) throw new Error(`下载资源失败：${reference}（HTTP ${assetResponse.status}）`)
-    files[reference] = new Uint8Array(await assetResponse.arrayBuffer())
-  }))
+  for (const [absolute, bytes] of Object.entries(downloaded)) {
+    const reference = absoluteToReference.get(absolute)
+    if (reference !== undefined) files[reference] = bytes
+  }
 
   const name = basename(jsonUrl.pathname).replace(/\.model3\.json$/iu, '') || 'URL 模型'
   const config: StoredModel['config'] = {
@@ -173,26 +165,15 @@ export async function importModelFromUrl(input: string): Promise<ImportResult> {
     schemaVersion: MODEL_SCHEMA_VERSION,
   }
   const stored: StoredModel = { config, files, modelJson, rootJsonPath: jsonUrl.pathname }
-  await saveStoredModel(stored)
-  return { config, name }
+  return { config, name, stored }
 }
 
 /** 恢复已持久化模型；旧 schema 自动视为无效并由 UI 回退默认 PNG。 */
 export async function loadStoredModel(): Promise<StoredModel | null> {
-  const record = await getRecord()
-  if (record === undefined || record.schemaVersion !== MODEL_SCHEMA_VERSION) return null
-  const files: Record<string, Uint8Array> = {}
-  for (const [path, buffer] of Object.entries(record.files)) files[path] = new Uint8Array(buffer)
-  return {
-    config: record.config,
-    files,
-    modelJson: record.modelJson,
-    rootJsonPath: record.rootJsonPath,
-  }
+  return repository.load()
 }
 
 /** 移除已导入模型并恢复默认鲸鱼娘。 */
 export async function removeStoredModel(): Promise<void> {
-  await clearRecord()
-  localStorage.removeItem(CONFIG_KEY)
+  await repository.remove()
 }

@@ -8,13 +8,16 @@ Never commit API keys, platform tokens, DSH profile files, credential stores, se
 
 ## Development
 
-Requirements: Node.js 20+, npm, DSH, and pnpm for profile management.
+Requirements: Node.js 24+, npm, DSH, and pnpm for profile management.
 
 ```sh
 npm ci
 npm run build
 npm test
+npm run typecheck
 npm run check
+npm run check:size
+npm run audit:prod
 npm pack --dry-run
 ```
 
@@ -26,7 +29,12 @@ Build scripts must be portable. Do not add machine-specific dependency paths. Lo
 - Missing credentials without leaks.
 - First balance baseline, later decreases, top-ups/grants, restart persistence, and Beijing day rollover.
 - Balance/spend/task switching, dragging, themes, resize clamping, scrolling, and session opening.
-- Exact `npm pack --dry-run` contents.
+- Browser authentication/Host-Origin rejection and loopback Bearer pairing issue/use/revoke without token leakage.
+- Request size/count limits and per-row isolation for corrupt session logs.
+- Poll coalescing/disposal, bounded session projections, and cache budgets.
+- Keyboard task operation, modal focus/Escape/return, ARIA announcements, and reduced-motion behavior.
+- ZIP Worker transfer, atomic IndexedDB replacement/removal, URL resource budgets, and hidden-page ticker pause.
+- Exact `npm pack --dry-run` contents, bundle budgets, and canonical production audit policy.
 - Chinese and English docs for user-visible changes.
 
 ## Pull requests

@@ -13,13 +13,13 @@ async function loadHostModule(temp) {
   const sequence = ++hostModuleSequence
   const credentialsStub = join(temp, 'credentials-stub.mjs')
   const outfile = join(temp, `host-under-test-${sequence}.mjs`)
-  await writeFile(credentialsStub, "export const credentialRef = (name) => name\n", 'utf8')
+  await writeFile(credentialsStub, "export const credentialRef = (name) => name\nexport const credentialKey = (scope, id) => `${scope}/${id}`\n", 'utf8')
   await build({
     entryPoints: [join(projectRoot, 'src/host/index.ts')],
     bundle: true,
     format: 'esm',
     platform: 'node',
-    target: 'node20',
+    target: 'node24',
     outfile,
     external: ['node:*'],
     plugins: [{
@@ -59,7 +59,12 @@ async function startHarness(temp, queue) {
   const { apply } = await loadHostModule(temp)
   const routes = new Map()
   const ctx = {
-    credentials: { resolve: async (ref) => ref === 'DEEPSEEK_API_KEY' ? { value: '<TEST_KEY>' } : undefined },
+    credentials: {
+      resolve: async (ref) => ref === 'DEEPSEEK_API_KEY' ? { value: '<TEST_KEY>' } : undefined,
+      readRecord: async () => undefined,
+      modifyRecord: async (_key, mutate) => mutate(undefined),
+    },
+    connection: { requestRejection: () => undefined },
     webServer: {
       register(route) {
         routes.set(route.path, route.handler)

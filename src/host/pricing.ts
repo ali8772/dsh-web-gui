@@ -18,7 +18,11 @@ export const DEFAULT_TIMEZONE = 'Asia/Shanghai'
 /** 官方高峰时段（本地小时，[start, end) 闭开区间）。 */
 export const DEFAULT_PEAK_WINDOWS: ReadonlyArray<readonly [number, number]> = [[9, 12], [14, 18]]
 
-const ZERO_UNIT = Object.freeze({ input: 0, cacheRead: 0, output: 0 })
+export const ZERO_PRICE: DualCurrencyUnit = Object.freeze({
+  cny: Object.freeze({ input: 0, cacheRead: 0, output: 0 }),
+  usd: Object.freeze({ input: 0, cacheRead: 0, output: 0 }),
+})
+const ZERO_UNIT = ZERO_PRICE.cny
 
 export interface PriceUnit {
   readonly input: number
@@ -155,14 +159,6 @@ function priceFor(model: string, table: Readonly<Record<string, DualCurrencyUnit
   return table[model] ?? table['*'] ?? { cny: ZERO_UNIT, usd: ZERO_UNIT }
 }
 
-/** 把两份单价合并（后者的存在键覆盖前者）。 */
-function mergeUnit(base: DualCurrencyUnit, over?: DualCurrencyUnit): DualCurrencyUnit {
-  return {
-    cny: { ...base.cny, ...(over?.cny ?? {}) },
-    usd: { ...base.usd, ...(over?.usd ?? {}) },
-  }
-}
-
 export interface PriceAtResult {
   /** 人民币单价（每 1M tokens）。 */
   readonly cny: PriceUnit
@@ -178,7 +174,7 @@ export interface PriceAtResult {
  * 解析顺序（政策链继承）：
  * 1. 从新到旧遍历「不晚于消息时刻」的政策，取第一个点名该模型的政策单价
  *    （被新政策下架的模型自动沿用旧政策价格，历史账单才与平台一致）；
- * 2. 没有任何政策点名 → 用最新适用政策的 `*` 兜底。
+ * 2. 没有任何政策点名 → 返回零单价，避免把其他 provider 或未知模型误算为 DeepSeek。
  *
  * @param model - 模型名。
  * @param timeMs - 消息时间（epoch ms）。
@@ -218,7 +214,12 @@ export function priceAt(
       ? (peak ? winner.peak : winner.offPeak)
       : winner.prices
   }
-  const unit = named ? priceFor(model, baseTable) : mergeUnit(priceFor(model, baseTable))
+  // `*` 只记录该政策的默认 DeepSeek 档位，不证明任意 provider/model 都按此价。
+  // 未被任何政策明确点名的模型保持未计价，避免把 GPT、Claude 或 `unknown`
+  // 伪装成 DeepSeek 调用费用。
+  const unit = named && baseTable !== undefined
+    ? priceFor(model, baseTable)
+    : { cny: ZERO_UNIT, usd: ZERO_UNIT }
   return {
     cny: unit.cny,
     usd: unit.usd,

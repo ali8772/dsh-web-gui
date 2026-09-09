@@ -13,7 +13,7 @@ await build({
   bundle: true,
   format: 'esm',
   platform: 'node',
-  target: 'node20',
+  target: 'node24',
   outfile: join(lib, 'index.js'),
   external: ['@deepseek-ai/*', 'node:*'],
   logLevel: 'warning',
@@ -51,6 +51,17 @@ await build({
   target: 'chrome100',
   outfile: join(lib, 'live2d.js'),
   loader: { '.css': 'text', '.png': 'dataurl' },
+  logLevel: 'warning',
+})
+
+// ZIP 解包/验证 Worker：独立 ESM，在主线程之外执行 fflate 与模型物化。
+await build({
+  entryPoints: [join(root, 'src/client/live2d/zip-worker.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'chrome100',
+  outfile: join(lib, 'live2d-zip-worker.js'),
   logLevel: 'warning',
 })
 

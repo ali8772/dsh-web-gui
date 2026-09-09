@@ -6,22 +6,25 @@
 import { Application, Ticker } from 'pixi.js'
 import { Cubism4ModelSettings, Live2DModel, MotionPreloadStrategy, MotionPriority } from 'pixi-live2d-display/cubism4'
 
+import { leaseLive2DCanvas } from './canvas'
 import { StoredModel } from './parse'
-
-/** 渲染后备存储分辨率上限：129×225 画布下约 516×900，足够 200% 缩放仍清晰。 */
-const MAX_RENDER_RESOLUTION = 4
 
 export interface MountOptions {
   /** 宠物显示大小（0.5–2）；渲染分辨率随其同步提升，避免放大后模糊。 */
   scale?: number
+  /** 替换流程先隐藏新 canvas，durable commit 成功后再显示。 */
+  hidden?: boolean
 }
 
 export interface Live2DHandle {
+  readonly canvas: HTMLCanvasElement
   dispose(): void
   playMotion(group?: string, index?: number): Promise<boolean>
   setExpression(id?: string | number): Promise<boolean>
   /** 更新显示大小：同步提高渲染分辨率，保持模型清晰度。 */
   setScale(scale: number): void
+  /** 页面隐藏时暂停 ticker 与空闲动作，恢复可见时继续。 */
+  setActive(active: boolean): void
   /** 当前模型定义的表情数量；0 表示「随机表情」不可用。 */
   expressionCount(): number
 }
@@ -61,20 +64,10 @@ function renderResolution(scale: number): number {
  * - 每 25 秒随机轻动作，模型自身同时提供眨眼、呼吸、物理效果。
  */
 export async function mountLive2D(
-  canvas: HTMLCanvasElement,
+  container: HTMLElement,
   stored: StoredModel,
   options: MountOptions = {},
 ): Promise<Live2DHandle> {
-  Live2DModel.registerTicker(Ticker)
-  const app = new Application({
-    view: canvas,
-    antialias: true,
-    autoDensity: true,
-    backgroundAlpha: 0,
-    resizeTo: canvas.parentElement ?? canvas,
-    resolution: renderResolution(options.scale ?? 1),
-  })
-
   const settingsJson = structuredClone(stored.modelJson) as Record<string, unknown>
   // ModelSettings 要求 url 字段；实际资源解析由下方 resolveURL 覆盖。
   settingsJson.url = `https://dsh-whale-pet.invalid/${encodeURIComponent(stored.config.name)}.model3.json`
@@ -92,10 +85,44 @@ export async function mountLive2D(
     return objectUrl
   }
 
+  Live2DModel.registerTicker(Ticker)
+
+  // PIXI destroy() 会通过 WEBGL_lose_context 主动失效 WebGL context；浏览器对同一
+  // canvas 再次 getContext() 仍可能返回这个 lost context，MAX_TEXTURE_IMAGE_UNITS
+  // 因而变成 0。每个 renderer 独占一个 canvas，销毁时连同节点移除，禁止复用。
+  const canvasLease = leaseLive2DCanvas(container)
+  const { canvas } = canvasLease
+  if (options.hidden === true) canvas.style.visibility = 'hidden'
+
+  let app: Application
+  try {
+    app = new Application({
+      view: canvas,
+      antialias: true,
+      autoDensity: true,
+      backgroundAlpha: 0,
+      resizeTo: container,
+      resolution: renderResolution(options.scale ?? 1),
+    })
+  } catch (cause) {
+    canvasLease.release()
+    throw cause
+  }
+
   let model: Live2DModel | null = null
   let disposed = false
+  let active = document.visibilityState === 'visible'
   let idleTimer = 0
   let resizeObserver: ResizeObserver | null = null
+
+  const setActive = (nextActive: boolean): void => {
+    if (disposed || active === nextActive) return
+    active = nextActive
+    if (active) app.ticker.start()
+    else app.ticker.stop()
+  }
+
+  if (!active) app.ticker.stop()
 
   const expressionCount = (): number => {
     const definitions = model?.internalModel.motionManager?.expressionManager?.definitions
@@ -194,14 +221,23 @@ export async function mountLive2D(
     delete canvas.dataset.live2dFocus
     delete canvas.dataset.live2dExpressions
     delete canvas.dataset.live2dExpressionApplied
-    if (model !== null) {
-      model.removeAllListeners()
-      model.destroy({ children: true, texture: true, baseTexture: true })
-      model = null
+    try {
+      if (model !== null) {
+        model.removeAllListeners()
+        model.destroy({ children: true, texture: true, baseTexture: true })
+        model = null
+      }
+    } finally {
+      try {
+        app.destroy(false, { children: false })
+      } finally {
+        // renderer.destroy() 会失效 WebGL context；即使销毁阶段抛错也必须释放专属
+        // canvas，确保下次挂载创建全新节点/上下文。
+        canvasLease.release()
+        for (const objectUrl of objectUrls.values()) URL.revokeObjectURL(objectUrl)
+        objectUrls.clear()
+      }
     }
-    app.destroy(false, { children: false })
-    for (const objectUrl of objectUrls.values()) URL.revokeObjectURL(objectUrl)
-    objectUrls.clear()
   }
 
   try {
@@ -214,7 +250,7 @@ export async function mountLive2D(
     app.stage.addChild(model)
     fitModel()
     resizeObserver = new ResizeObserver(fitModel)
-    resizeObserver.observe(canvas.parentElement ?? canvas)
+    resizeObserver.observe(container)
     canvas.addEventListener('pointermove', onPointerMove)
     canvas.addEventListener('pointerleave', onPointerLeave)
     canvas.addEventListener('click', onPointerTap)
@@ -225,11 +261,13 @@ export async function mountLive2D(
 
     const idleGroup = motionGroups(model).find(([group]) => group.toLowerCase() === 'idle')?.[0]
     if (idleGroup !== undefined) void playMotion(idleGroup)
-    idleTimer = window.setInterval(() => void playMotion(), 25_000)
+    idleTimer = window.setInterval(() => {
+      if (active) void playMotion()
+    }, 25_000)
   } catch (cause) {
     dispose()
     throw cause
   }
 
-  return { dispose, playMotion, setExpression, setScale, expressionCount }
+  return { canvas, dispose, playMotion, setExpression, setScale, setActive, expressionCount }
 }

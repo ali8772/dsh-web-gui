@@ -1051,3 +1051,43 @@
   cursor: pointer;
 }
 .wp-live2d-remove:hover { background: rgba(229, 72, 77, 0.08); }
+
+.wp-task-row:focus-visible,
+.wp-live2d-config:focus-visible,
+.wp-live2d-action:focus-visible,
+.wp-live2d-remove:focus-visible,
+.wp-live2d-close:focus-visible,
+.wp-summary-close:focus-visible {
+  outline: 2px solid #4d6bfe;
+  outline-offset: 2px;
+}
+
+.wp-companion-token {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wp-companion-token code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: all;
+  font-size: 9px;
+}
+.wp-companion-grant {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-root *,
+  .wp-root *::before,
+  .wp-root *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

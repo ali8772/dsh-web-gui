@@ -9,6 +9,24 @@ export type Live2DKinds = 'zip' | 'url'
 
 export const MAX_ZIP_FILES = 2_048
 export const MAX_ZIP_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+export const MAX_URL_FILES = 256
+export const MAX_URL_FILE_BYTES = 32 * 1024 * 1024
+export const MAX_URL_TOTAL_BYTES = 128 * 1024 * 1024
+export const MAX_URL_CONCURRENCY = 4
+
+export function modelImportBudget(): {
+  maxFiles: number
+  maxFileBytes: number
+  maxTotalBytes: number
+  maxConcurrent: number
+} {
+  return {
+    maxFiles: MAX_URL_FILES,
+    maxFileBytes: MAX_URL_FILE_BYTES,
+    maxTotalBytes: MAX_URL_TOTAL_BYTES,
+    maxConcurrent: MAX_URL_CONCURRENCY,
+  }
+}
 
 export function basename(path: string): string {
   return path.replaceAll('\\', '/').split('/').pop() ?? path

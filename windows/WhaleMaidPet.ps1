@@ -80,6 +80,7 @@ $script:AssetDir = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'assets' } else 
 $script:StateDir = Join-Path $env:APPDATA 'dsh-whale-pet'
 if (-not (Test-Path $script:StateDir)) { New-Item -ItemType Directory -Path $script:StateDir -Force | Out-Null }
 $script:StateFile = Join-Path $script:StateDir 'state.json'
+$script:CompanionTokenFile = Join-Path $script:StateDir 'companion-token.dat'
 
 # 运行期状态
 $script:Mode = 0                       # 0=余额 1=今日 2=近7天
@@ -100,6 +101,52 @@ $script:WindowPos = $null
 # ---------------------------------------------------------------------------
 function Get-UnixNowMs {
   return [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+}
+
+function Protect-CompanionToken([string]$token) {
+  if ([string]::IsNullOrWhiteSpace($token) -or $token -notmatch '^wpg1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$') {
+    throw 'Invalid dsh-whale-pet companion token.'
+  }
+  $bytes = [Text.Encoding]::UTF8.GetBytes($token)
+  $protected = [Security.Cryptography.ProtectedData]::Protect(
+    $bytes,
+    $null,
+    [Security.Cryptography.DataProtectionScope]::CurrentUser
+  )
+  [IO.File]::WriteAllBytes($script:CompanionTokenFile, $protected)
+}
+
+function Get-CompanionToken {
+  if ($env:DSH_WHALE_PET_COMPANION_TOKEN) { return $env:DSH_WHALE_PET_COMPANION_TOKEN.Trim() }
+  try {
+    if (-not (Test-Path $script:CompanionTokenFile)) { return $null }
+    $protected = [IO.File]::ReadAllBytes($script:CompanionTokenFile)
+    $bytes = [Security.Cryptography.ProtectedData]::Unprotect(
+      $protected,
+      $null,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    $token = [Text.Encoding]::UTF8.GetString($bytes)
+    if ($token -match '^wpg1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$') { return $token }
+  } catch { }
+  return $null
+}
+
+function Remove-CompanionToken {
+  Remove-Item -LiteralPath $script:CompanionTokenFile -Force -ErrorAction SilentlyContinue
+}
+
+function Get-CompanionBaseUrl {
+  $value = if ($env:DSH_WHALE_PET_DSH_URL) { $env:DSH_WHALE_PET_DSH_URL.TrimEnd('/') } else { 'http://127.0.0.1:3080' }
+  $uri = $null
+  if (-not [Uri]::TryCreate($value, [UriKind]::Absolute, [ref]$uri)) { throw 'Invalid DSH companion URL.' }
+  if ($uri.Scheme -ne 'http' -or $uri.Host -notin @('localhost', '127.0.0.1', '::1')) {
+    throw 'The DSH companion URL must use HTTP on localhost, 127.0.0.1, or ::1.'
+  }
+  if (-not [string]::IsNullOrEmpty($uri.UserInfo) -or $uri.AbsolutePath -ne '/' -or $uri.Query -or $uri.Fragment) {
+    throw 'The DSH companion URL must be an origin without credentials, path, query, or fragment.'
+  }
+  return $uri.GetLeftPart([UriPartial]::Authority)
 }
 
 function Format-Money([double]$amount, [string]$currency, [bool]$approx = $false) {
@@ -234,13 +281,17 @@ function Get-DshApiKey {
 function Fetch-State {
   $result = @{ source = 'none'; data = $null; error = $null }
 
-  # --- 尝试 DSH 模式 ---
-  # 可用环境变量 DSH_WHALE_PET_DSH_URL 覆盖数据源地址（默认 WSL DSH GUI）
-  $dshUrl = if ($env:DSH_WHALE_PET_DSH_URL) { $env:DSH_WHALE_PET_DSH_URL } else { 'http://127.0.0.1:3080/api/whale-pet/state' }
+  # --- 尝试已配对 DSH 模式 ---
+  # 浏览器设置中生成令牌；首次可用环境变量导入，之后保存到 CurrentUser DPAPI。
+  $companionToken = Get-CompanionToken
   try {
+    if ($null -eq $companionToken) { throw 'pairing-required' }
+    $dshBaseUrl = Get-CompanionBaseUrl
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds($script:HttpTimeoutSec)
-    $resp = $client.GetAsync($dshUrl).Result
+    $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, "$dshBaseUrl/dsh-whale-pet/companion/v1/state")
+    $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $companionToken)
+    $resp = $client.SendAsync($req).Result
     if ($resp.IsSuccessStatusCode) {
       $json = $resp.Content.ReadAsStringAsync().Result
       $obj = $json | ConvertFrom-Json
@@ -251,10 +302,12 @@ function Fetch-State {
         $client.Dispose()
         return $result
       }
+    } elseif ([int]$resp.StatusCode -eq 401 -or [int]$resp.StatusCode -eq 403) {
+      $result.error = 'pairing-required'
     }
     $client.Dispose()
   } catch {
-    # DSH 不可达 → 独立模式
+    # DSH 不可达或未配对 → 独立模式
   }
 
   # --- 独立模式 ---
@@ -1229,6 +1282,10 @@ function Test-Render {
 # ---------------------------------------------------------------------------
 if (-not $AsLibrary) {
   Read-LocalState
+  if ($env:DSH_WHALE_PET_COMPANION_TOKEN) {
+    try { Protect-CompanionToken $env:DSH_WHALE_PET_COMPANION_TOKEN }
+    catch { throw "Failed to store the desktop companion token: $($_.Exception.Message)" }
+  }
 
   if ($RenderTest) {
     Test-Render
