@@ -899,8 +899,8 @@
   top: -4px;
   right: -4px;
   z-index: 3;
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 1px solid var(--dsw-alias-border-l1, rgba(120, 140, 190, 0.4));
   border-radius: 50%;
@@ -1024,6 +1024,64 @@
 }
 .wp-live2d-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .wp-live2d-controls { display: flex; gap: 8px; }
+.wp-live2d-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.wp-live2d-model-row {
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+}
+.wp-live2d-model-switch {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(120, 140, 190, 0.25));
+  border-radius: 8px;
+  background: var(--dsw-alias-fill-l1, rgba(128, 140, 180, 0.08));
+  color: var(--dsw-alias-label-primary, #1a1d24);
+  text-align: left;
+  cursor: pointer;
+}
+.wp-pet.wp-bg-dark .wp-live2d-model-switch { color: rgba(255, 255, 255, 0.92); }
+.wp-live2d-model-switch[aria-pressed="true"] {
+  border-color: rgba(77, 107, 254, 0.7);
+  background: rgba(77, 107, 254, 0.14);
+}
+.wp-live2d-model-switch:disabled,
+.wp-live2d-model-delete:disabled { opacity: 0.55; cursor: not-allowed; }
+.wp-live2d-model-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+}
+.wp-live2d-model-kind,
+.wp-live2d-model-active {
+  flex: none;
+  font-size: 8px;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+}
+.wp-live2d-model-active { color: #4d6bfe; font-weight: 700; }
+.wp-live2d-model-delete {
+  flex: none;
+  width: 30px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(229, 72, 77, 0.35));
+  border-radius: 8px;
+  background: transparent;
+  color: #e5484d;
+  font-size: 16px;
+  cursor: pointer;
+}
+.wp-live2d-model-delete:hover { background: rgba(229, 72, 77, 0.08); }
 .wp-live2d-scalerow { display: flex; gap: 8px; align-items: center; }
 .wp-live2d-scale {
   flex: 1;
@@ -1055,6 +1113,8 @@
 .wp-task-row:focus-visible,
 .wp-live2d-config:focus-visible,
 .wp-live2d-action:focus-visible,
+.wp-live2d-model-switch:focus-visible,
+.wp-live2d-model-delete:focus-visible,
 .wp-live2d-remove:focus-visible,
 .wp-live2d-close:focus-visible,
 .wp-summary-close:focus-visible {

@@ -76,6 +76,28 @@ test('ModelDownloader stops an undeclared streaming body at the file budget', as
   }
 })
 
+test('ModelDownloader forwards cancellation to every resource fetch', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-download-test-'))
+  try {
+    const { downloadModelFiles } = await loadModule(temp)
+    const controller = new AbortController()
+    let received
+    const promise = downloadModelFiles(['cancelled'], {
+      maxFiles: 1, maxFileBytes: 4, maxTotalBytes: 4, maxConcurrent: 1,
+      signal: controller.signal,
+      fetch: async (_url, init) => {
+        received = init.signal
+        await new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }))
+      },
+    })
+    controller.abort(new DOMException('cancelled', 'AbortError'))
+    await assert.rejects(promise, /cancelled/)
+    assert.equal(received, controller.signal)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
 test('ModelDownloader rejects an oversized declared file before reading its body', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-download-test-'))
   try {

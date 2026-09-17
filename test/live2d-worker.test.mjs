@@ -15,5 +15,7 @@ test('ZIP import uses a dedicated module Worker and transfers its ArrayBuffer', 
   assert.match(build, /live2d-zip-worker\.js/)
   assert.match(client, /new Worker\([^\n]+type:\s*'module'/)
   assert.match(client, /postMessage\(bytes,\s*\[bytes\]\)/)
-  assert.match(widget, /prepareModelFromZipWorker\(bytes\)/)
+  assert.match(widget, /prepareModelFromZipWorker\(bytes, signal\)/)
+  assert.match(client, /signal\?\.addEventListener\('abort'/)
+  assert.match(client, /worker\.terminate\(\)/)
 })

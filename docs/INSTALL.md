@@ -49,7 +49,7 @@ Never place the token in a URL, query string, JSON state file, issue report, scr
 
 ## Live2D
 
-Open the pet's `⚙️` settings to import a Cubism 3/4/5 `.model3.json` via ZIP or URL (the server must allow CORS). The model is stored in the browser's IndexedDB and restores after refresh. The official Cubism Core is already bundled and served locally, so no network runtime is required. Only import models you have rights to use; details in `ASSET_NOTICE.md`.
+Open the pet's `⚙️` settings to import a Cubism 3/4/5 `.model3.json` via ZIP or URL (the server must allow CORS). Up to five recently used models, including the active one, are stored in the browser's IndexedDB and restore after refresh. Use the generated recent-model buttons to switch instantly; returning to default preserves the list, while each row's delete button permanently removes that model and its assets. Importing a sixth model evicts the least recently used one. The official Cubism Core is already bundled and served locally, so no network runtime is required. Only import models you have rights to use; details in `ASSET_NOTICE.md`.
 
 ## Verify
 

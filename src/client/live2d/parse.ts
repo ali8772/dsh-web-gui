@@ -84,6 +84,8 @@ export function resolveZipAssetPath(rootJsonPath: string, reference: string): st
 
 export interface Live2DConfig {
   kind: Live2DKinds
+  /** 持久模型库中的稳定 ID。旧的单模型记录可能没有该字段。 */
+  modelId?: string
   /** 模型名（来自根 JSON 或用户提供）。 */
   name: string
   /** URL 模式的根 model3.json 地址。 */
@@ -205,6 +207,12 @@ export function rewriteModelJsonUrls(json: unknown, urlOf: (rel: string) => stri
   return out
 }
 
+export function createModelId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 export interface StoredModel {
   config: Live2DConfig
   /** model3.json 引用路径 → 资源 bytes；保留目录，防止同名文件冲突。 */
@@ -228,6 +236,7 @@ export function materializeZipModel(zip: ZipModel, rootJson: unknown): StoredMod
   return {
     config: {
       kind: 'zip',
+      modelId: createModelId(),
       name: zip.name,
       rootJsonPath: zip.rootJsonPath,
       importedAt: Date.now(),

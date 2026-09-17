@@ -50,6 +50,10 @@ Balance/spend refresh every 60 seconds and host caches are similar. Retry after 
 
 Remove localStorage key `dsh-whale-pet:pos` and refresh.
 
+## A recent Live2D model disappeared
+
+The library intentionally retains at most five models including the active one. Importing a sixth model permanently evicts the least recently used model and its IndexedDB assets. Switching a model moves it to the front. “恢复默认鲸鱼娘” preserves history; the `×` button on a model row permanently deletes it after confirmation.
+
 ## Upgrade still reports an old version
 
 Restart the web profile, hard-refresh the browser, verify health, and inspect the resolved profile dependency. GitHub `main` may be ahead of tagged Releases while retaining the same package version during development; compare the installed source/commit and do not infer feature availability from `0.4.1` alone.
@@ -66,7 +70,7 @@ Restart the web profile, hard-refresh the browser, verify health, and inspect th
 
 ## Live2D model disappears after refresh
 
-A saved model restores from one atomic IndexedDB `active` record. Clear browser storage for the site or use “移除模型” if a stale record blocks recovery; importing again replaces config and assets together. The obsolete localStorage model marker is no longer used.
+The active model restores from the IndexedDB library manifest and its separate `model:<id>` record. Open settings and try another recent-model button; permanently delete a damaged row with `×`, or clear browser storage for the site if the manifest itself is stale. “恢复默认鲸鱼娘” intentionally keeps recent models. The obsolete localStorage pointer and legacy single-model `active` record are no longer used after automatic migration.
 
 ## Safe issue reports
 

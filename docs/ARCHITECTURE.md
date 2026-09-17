@@ -41,11 +41,12 @@ The main bundle never imports PIXI. Opening the settings or restoring a saved mo
 1. `runtime.ts` injects the local Cubism Core `<script>` and waits for `Live2DCubismCore`.
 2. Only then does the widget `import('/dsh-whale-pet-live2d.js')`; that chunk checks the global runtime at module load, so ordering is fixed.
 3. `zip-client.ts` transfers ZIP bytes to `zip-worker.ts`; the Worker parses/validates off the UI thread and enforces 2,048 files / 256 MiB unpacked. URL imports use `ModelDownloader` with 256 files, 32 MiB per file, 128 MiB total, and concurrency four.
-4. `Live2DRepository` stores metadata and assets together in one IndexedDB `active` record, so no secondary marker can diverge.
-5. `core.ts` builds a `Cubism4ModelSettings` whose `resolveURL` returns per-file blob object URLs, mounts the model, sizes it into the whale box, and adds pointer-focus, hit-area click motions, idle/random motions, and expressions.
-6. Every PIXI renderer leases a newly created canvas from `canvas.ts`. PIXI 6 deliberately loses its WebGL context during `destroy()`, so the canvas is removed and never reused. Model replacement stages a hidden successor, commits durable state, then reveals it and disposes the prior renderer; model removal likewise keeps the current renderer until durable deletion succeeds.
+4. `Live2DModelLibrary` owns a bounded five-item MRU manifest (`activeModelId`, order, and display metadata) and stores each complete model under a separate IndexedDB key. Every manifest/model write, eviction, or deletion is one read-write transaction; listing and switching do not clone unrelated model blobs. The previous single-model `active` record migrates atomically on first read.
+5. Importing or switching moves that model to the MRU front. A sixth model evicts the least recently used record and assets. Returning to the default PNG clears only `activeModelId`; per-item delete permanently releases that model's record.
+6. `core.ts` builds a `Cubism4ModelSettings` whose `resolveURL` returns per-file blob object URLs, mounts the model, sizes it into the whale box, and adds pointer-focus, hit-area click motions, idle/random motions, and expressions.
+7. Every PIXI renderer leases a newly created canvas from `canvas.ts`. PIXI 6 deliberately loses its WebGL context during `destroy()`, so the canvas is removed and never reused. Imports and saved-model switches stage a hidden successor and coordinate renderer/durable commits through one mutation queue; failures before a durable commit discard the staged renderer, while every successful durable commit is reflected before a newer queued operation supersedes it.
 
-Failures at any step leave the default PNG active; the dialog shows the reason and keeps prior state unless an import succeeded.
+Failures before persistence retain the previous renderer (or default PNG); the dialog shows the reason. IndexedDB mutations are atomic, so rejected writes need no compensation. Coordination is guaranteed within one widget/browser realm; another open tab reconciles its visible renderer after reload.
 
 ## Trust boundaries
 

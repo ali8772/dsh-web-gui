@@ -10,13 +10,18 @@ import { createElement as h, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import whaleChanUrl from '../../assets/whale-chan.png'
 import {
+  activateStoredModel,
+  deleteStoredModel,
+  listStoredModels,
   loadStoredModel,
+  loadStoredModelById,
   prepareModelFromUrl,
-  readConfig,
-  removeStoredModel,
   saveStoredModel,
+  useDefaultModel,
 } from './live2d/ui.ts'
-import { createLive2DMutationQueue, removeLive2DIfCurrent, replaceLive2DIfCurrent } from './live2d/mutation.ts'
+import { createLive2DMutationQueue, deleteLive2DIfCurrent, replaceLive2DIfCurrent, switchLive2DIfCurrent, useDefaultLive2DIfCurrent } from './live2d/mutation.ts'
+import type { Live2DModelSummary } from './live2d/library.ts'
+import { Live2DRecentModels } from './live2d/recent-models.ts'
 import { prepareModelFromZipWorker } from './live2d/zip-client.ts'
 import type { Live2DHandle } from './live2d/core.ts'
 import type { StoredModel } from './live2d/parse.ts'
@@ -692,12 +697,14 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   const [peak, setPeak] = useState<PeakStatus>(() => computePeak())   // 高峰时段（余额栏徽标）
   const taskRef = useRef(task)
   taskRef.current = task   // 拖拽 effect 的闭包需要读到最新任务状态
+  const live2dOpenRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [fetching, setFetching] = useState(false)
   const [mode, setMode] = useState(0)
   const [pos, setPos] = useState<Pos>(() => loadPos())
   const [dragging, setDragging] = useState(false)
   const [summaryDialog, setSummaryDialog] = useState<SessionSummary | null>(null)
+  const deferredSummaryRef = useRef<SessionSummary | null>(null)
   const [goUsage, setGoUsage] = useState<OpenCodeGoUsage | null>(null)
   const [goError, setGoError] = useState<string | null>(null)
   const [goFetching, setGoFetching] = useState(false)
@@ -718,8 +725,14 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   // ---- Live2D（可选移植模型） ----
   const [live2d, setLive2d] = useState<{ phase: 'off' | 'loading' | 'ready' | 'error'; name?: string; error?: string }>({ phase: 'off' })
   const [live2dOpen, setLive2dOpen] = useState(false)
+  live2dOpenRef.current = live2dOpen
   const [live2dUrl, setLive2dUrl] = useState('')
   const [live2dExprCount, setLive2dExprCount] = useState(0)
+  const [recentLive2dModels, setRecentLive2dModels] = useState<readonly Live2DModelSummary[]>([])
+  const [live2dListBusy, setLive2dListBusy] = useState(false)
+  const [live2dListError, setLive2dListError] = useState<string | null>(null)
+  const live2dListRequestRef = useRef(0)
+  const live2dListPendingRef = useRef(0)
   const [companionGrants, setCompanionGrants] = useState<readonly CompanionGrant[]>([])
   const [companionLabel, setCompanionLabel] = useState('Windows companion')
   const [companionToken, setCompanionToken] = useState<string | null>(null)
@@ -731,8 +744,17 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   const live2dDialogRef = useRef<HTMLDivElement | null>(null)
   const summaryDialogRef = useRef<HTMLDivElement | null>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
+  const recentModelFocusRef = useRef<{ type: 'model'; id: string } | { type: 'close' } | null>(null)
   const live2dFileRef = useRef<HTMLInputElement | null>(null)
   const live2dOperationRef = useRef(0)
+  const live2dPreparationRef = useRef<AbortController | null>(null)
+
+  const startLive2dOperation = (): { operation: number; signal: AbortSignal } => {
+    live2dPreparationRef.current?.abort()
+    const controller = new AbortController()
+    live2dPreparationRef.current = controller
+    return { operation: ++live2dOperationRef.current, signal: controller.signal }
+  }
 
   /** 新 renderer 先在独立 canvas 挂载；commit 时才销毁旧 renderer 并显示新 canvas。 */
   const stageStored = async (stored: StoredModel, operation: number) => {
@@ -749,6 +771,10 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
       commit(): void {
         if (settled) return
         settled = true
+        if (!container.isConnected) {
+          disposeLive2DHandle(nextHandle)
+          return
+        }
         const previousHandle = live2dHandleRef.current
         live2dHandleRef.current = nextHandle
         nextCanvas.style.visibility = ''
@@ -778,27 +804,70 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     live2dHandleRef.current?.setScale(petScale)
   }, [petScale])
 
+  const refreshRecentLive2dModels = async (): Promise<void> => {
+    const request = ++live2dListRequestRef.current
+    live2dListPendingRef.current += 1
+    setLive2dListBusy(true)
+    try {
+      const models = await listStoredModels()
+      if (request !== live2dListRequestRef.current) return
+      setRecentLive2dModels(models)
+      setLive2dListError(null)
+      const focusTarget = recentModelFocusRef.current
+      if (focusTarget !== null) {
+        recentModelFocusRef.current = null
+        queueMicrotask(() => {
+          const escaped = focusTarget.type === 'model'
+            ? (typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(focusTarget.id) : focusTarget.id.replaceAll('"', '\\"'))
+            : null
+          const target = (escaped === null ? null : live2dDialogRef.current?.querySelector<HTMLButtonElement>(`[data-live2d-model-id="${escaped}"]`))
+            ?? live2dDialogRef.current?.querySelector<HTMLButtonElement>('.wp-live2d-model-switch')
+            ?? live2dDialogRef.current?.querySelector<HTMLButtonElement>('.wp-live2d-close')
+          target?.focus()
+        })
+      }
+    } catch (cause) {
+      if (request !== live2dListRequestRef.current) return
+      console.warn('dsh-whale-pet: recent Live2D model list refresh failed', cause)
+      setLive2dListError('最近模型列表读取失败，请关闭设置后重试')
+    } finally {
+      live2dListPendingRef.current -= 1
+      if (live2dListPendingRef.current === 0) setLive2dListBusy(false)
+    }
+  }
+
+  const focusableSettingsElements = (): HTMLElement[] => {
+    const dialog = live2dDialogRef.current
+    if (dialog === null) return []
+    return [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])')]
+      .filter((element) => element.offsetParent !== null)
+  }
+
   const commitPreparedModel = async (stored: StoredModel, operation: number): Promise<boolean> => {
-    return replaceLive2DIfCurrent(
+    const committed = await replaceLive2DIfCurrent(
       live2dMutationQueue,
       () => operation === live2dOperationRef.current,
       stored,
-      { load: loadStoredModel, save: saveStoredModel, remove: removeStoredModel },
+      { save: saveStoredModel },
       () => stageStored(stored, operation),
     )
+    if (committed && operation === live2dOperationRef.current) await refreshRecentLive2dModels()
+    return committed
   }
 
   const handleZipImport = async (file: File): Promise<void> => {
-    const operation = ++live2dOperationRef.current
+    const { operation, signal } = startLive2dOperation()
     setLive2d({ phase: 'loading' })
     try {
       await loadLive2DChunk()
       const bytes = await file.arrayBuffer()
-      const { config, stored } = await prepareModelFromZipWorker(bytes)
+      const { config, stored } = await prepareModelFromZipWorker(bytes, signal)
       if (!await commitPreparedModel(stored, operation)) return
+      if (operation !== live2dOperationRef.current) return
       setLive2d({ phase: 'ready', name: config.name })
       setLive2dOpen(false)
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') return
       if (operation === live2dOperationRef.current) {
         setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
       }
@@ -808,15 +877,17 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   const handleUrlImport = async (): Promise<void> => {
     const url = live2dUrl.trim()
     if (url === '') return
-    const operation = ++live2dOperationRef.current
+    const { operation, signal } = startLive2dOperation()
     setLive2d({ phase: 'loading' })
     try {
       await loadLive2DChunk()
-      const { config, stored } = await prepareModelFromUrl(url)
+      const { config, stored } = await prepareModelFromUrl(url, signal)
       if (!await commitPreparedModel(stored, operation)) return
+      if (operation !== live2dOperationRef.current) return
       setLive2d({ phase: 'ready', name: config.name })
       setLive2dOpen(false)
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') return
       if (operation === live2dOperationRef.current) {
         setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
       }
@@ -868,23 +939,78 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     setLive2dOpen(false)
   }
 
-  const handleRemoveModel = async (): Promise<void> => {
+  const commitDefaultRenderer = (): void => {
+    const previousHandle = live2dHandleRef.current
+    live2dHandleRef.current = null
+    disposeLive2DHandle(previousHandle)
+    setLive2dExprCount(0)
+    setLive2d({ phase: 'off' })
+  }
+
+  const handleUseDefaultModel = async (): Promise<void> => {
+    live2dPreparationRef.current?.abort()
     const operation = ++live2dOperationRef.current
     try {
-      // 与导入提交使用同一队列；delete 成功后才销毁 renderer，失败则保留当前模型。
-      await removeLive2DIfCurrent(
+      await useDefaultLive2DIfCurrent(
         live2dMutationQueue,
         () => operation === live2dOperationRef.current,
-        removeStoredModel,
-        () => {
-          const previousHandle = live2dHandleRef.current
-          live2dHandleRef.current = null
-          disposeLive2DHandle(previousHandle)
-          setLive2dExprCount(0)
-          setLive2d({ phase: 'off' })
-          setLive2dOpen(false)
-        },
+        useDefaultModel,
+        commitDefaultRenderer,
       )
+      await refreshRecentLive2dModels()
+    } catch (cause) {
+      if (operation === live2dOperationRef.current) {
+        setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+      }
+    }
+  }
+
+  const handleSwitchModel = async (model: Live2DModelSummary): Promise<void> => {
+    if (model.active || live2d.phase === 'loading') return
+    live2dPreparationRef.current?.abort()
+    const operation = ++live2dOperationRef.current
+    recentModelFocusRef.current = { type: 'model', id: model.id }
+    setLive2d({ phase: 'loading' })
+    try {
+      const switched = await switchLive2DIfCurrent(
+        live2dMutationQueue,
+        () => operation === live2dOperationRef.current,
+        model.id,
+        {
+          load: loadStoredModelById,
+          activate: activateStoredModel,
+        },
+        async (stored) => stageStored(stored, operation),
+      )
+      if (operation !== live2dOperationRef.current) return
+      if (switched) {
+        setLive2d({ phase: 'ready', name: model.name })
+      } else {
+        setLive2d({ phase: 'error', error: `模型“${model.name}”已不存在或本地资源损坏` })
+      }
+      await refreshRecentLive2dModels()
+    } catch (cause) {
+      if (operation === live2dOperationRef.current) {
+        setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
+      }
+    }
+  }
+
+  const handleDeleteStoredModel = async (model: Live2DModelSummary): Promise<void> => {
+    if (!window.confirm(`永久删除模型“${model.name}”及其本地资源？`)) return
+    live2dPreparationRef.current?.abort()
+    const operation = ++live2dOperationRef.current
+    const index = recentLive2dModels.findIndex((item) => item.id === model.id)
+    const nextFocusId = recentLive2dModels[index + 1]?.id ?? recentLive2dModels[index - 1]?.id
+    recentModelFocusRef.current = nextFocusId === undefined ? { type: 'close' } : { type: 'model', id: nextFocusId }
+    try {
+      const deleted = await deleteLive2DIfCurrent(
+        live2dMutationQueue,
+        () => operation === live2dOperationRef.current,
+        () => deleteStoredModel(model.id),
+        commitDefaultRenderer,
+      )
+      if (deleted && operation === live2dOperationRef.current) await refreshRecentLive2dModels()
     } catch (cause) {
       if (operation === live2dOperationRef.current) {
         setLive2d({ phase: 'error', error: cause instanceof Error ? cause.message : String(cause) })
@@ -897,9 +1023,34 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : settingsButtonRef.current
     setCompanionToken(null)
     void refreshCompanionGrants()
-    queueMicrotask(() => live2dDialogRef.current?.focus())
+    void refreshRecentLive2dModels()
+    queueMicrotask(() => focusableSettingsElements()[0]?.focus() ?? live2dDialogRef.current?.focus())
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') closeLive2DSettings()
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeLive2DSettings()
+        return
+      }
+      if (event.key === 'Tab') {
+        const focusable = focusableSettingsElements()
+        const first = focusable[0]
+        const last = focusable.at(-1)
+        if (first === undefined || last === undefined) {
+          event.preventDefault()
+          live2dDialogRef.current?.focus()
+        } else {
+          const dialog = live2dDialogRef.current
+          const active = document.activeElement
+          const outside = !(active instanceof Node) || dialog === null || !dialog.contains(active)
+          if (event.shiftKey && (outside || active === dialog || active === first)) {
+            event.preventDefault()
+            last.focus()
+          } else if (!event.shiftKey && (outside || active === last)) {
+            event.preventDefault()
+            first.focus()
+          }
+        }
+      }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => {
@@ -909,7 +1060,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   }, [live2dOpen])
 
   useEffect(() => {
-    if (summaryDialog === null) return
+    if (summaryDialog === null || live2dOpen) return
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     queueMicrotask(() => summaryDialogRef.current?.focus())
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -920,28 +1071,32 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
       document.removeEventListener('keydown', onKeyDown)
       previous?.focus()
     }
-  }, [summaryDialog])
+  }, [summaryDialog, live2dOpen])
 
   // 挂载时读取配置：已导入模型则自动恢复。
   useEffect(() => {
     const operation = ++live2dOperationRef.current
     void (async () => {
-      const cfg = await readConfig()
-      if (operation !== live2dOperationRef.current || cfg === null) return
-      setLive2d({ phase: 'loading' })
       try {
-        await loadLive2DChunk()
-        // 等待旧组件遗留的导入/回滚结束后再读取 active 记录，禁止恢复中间态。
+        // Always wait for prior component mutations before reading active state. A preflight read
+        // could miss an import whose IndexedDB transaction is still queued during HMR/remount.
         await live2dMutationQueue.run(async () => {
           if (operation !== live2dOperationRef.current) return
           const stored = await loadStoredModel()
           if (operation !== live2dOperationRef.current) return
           if (stored === null) {
             setLive2d({ phase: 'off' })
+            setRecentLive2dModels(await listStoredModels())
             return
           }
+          setLive2d({ phase: 'loading' })
+          await loadLive2DChunk()
+          if (operation !== live2dOperationRef.current) return
           await mountRestored(stored, operation)
-          if (operation === live2dOperationRef.current) setLive2d({ phase: 'ready', name: stored.config.name })
+          if (operation === live2dOperationRef.current) {
+            setLive2d({ phase: 'ready', name: stored.config.name })
+            setRecentLive2dModels(await listStoredModels())
+          }
         })
       } catch (cause) {
         if (operation === live2dOperationRef.current) {
@@ -951,6 +1106,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     })()
     return () => {
       ++live2dOperationRef.current
+      live2dPreparationRef.current?.abort()
       const previousHandle = live2dHandleRef.current
       live2dHandleRef.current = null
       disposeLive2DHandle(previousHandle)
@@ -1055,8 +1211,21 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     }
   }, [])
 
-  // 订阅任务完成汇总；订阅时会立即接收重挂载期间尚未关闭的弹窗。
-  useEffect(() => subscribeSummary(setSummaryDialog), [])
+  // 设置对话框打开时延迟完成汇总，避免两个模态框争抢焦点与 Escape。
+  useEffect(() => subscribeSummary((summary) => {
+    if (summary !== null && live2dOpenRef.current) {
+      deferredSummaryRef.current = summary
+      return
+    }
+    setSummaryDialog(summary)
+  }), [])
+
+  useEffect(() => {
+    if (live2dOpen || deferredSummaryRef.current === null) return
+    const deferred = deferredSummaryRef.current
+    deferredSummaryRef.current = null
+    setSummaryDialog(deferred)
+  }, [live2dOpen])
 
   // 订阅当前任务状态（running + 会话标题）
   useEffect(() => subscribeTask(setTask), [])
@@ -1462,7 +1631,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
         ),
       ),
     ),
-    summaryDialog !== null && createPortal(
+    summaryDialog !== null && !live2dOpen && createPortal(
       h('div', {
         className: 'wp-summary-backdrop',
         onClick: dismissSummary,
@@ -1563,6 +1732,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
           className: 'wp-live2d-dialog',
           role: 'dialog',
           'aria-modal': true,
+          'aria-busy': live2d.phase === 'loading' || live2dListBusy,
           'aria-labelledby': 'wp-live2d-title',
           tabIndex: -1,
           onClick: (e: React.MouseEvent<HTMLDivElement>): void => e.stopPropagation(),
@@ -1578,15 +1748,35 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
             }, '×'),
           ),
           h('div', { className: 'wp-live2d-body' },
-            h('div', { className: 'wp-live2d-status', 'data-live2d-status': live2d.phase },
+            h('div', {
+              className: 'wp-live2d-status',
+              role: 'status',
+              'aria-live': 'polite',
+              'aria-atomic': true,
+              'data-live2d-status': live2d.phase,
+            },
               live2d.phase === 'off' && '当前使用默认鲸鱼娘（未导入 Live2D）',
               live2d.phase === 'loading' && '正在加载模型…',
               live2d.phase === 'ready' && `已启用：${live2d.name ?? '模型'}`,
               live2d.phase === 'error' && `加载失败：${live2d.error ?? '未知错误'}`,
             ),
+            live2dListError !== null && h('div', {
+              className: 'wp-live2d-status',
+              role: 'status',
+              'aria-live': 'polite',
+              'aria-atomic': true,
+              'data-live2d-status': 'error',
+            }, live2dListError),
+            h(Live2DRecentModels, {
+              models: recentLive2dModels,
+              busy: live2d.phase === 'loading',
+              onSwitch: (model) => void handleSwitchModel(model),
+              onDelete: (model) => void handleDeleteStoredModel(model),
+            }),
             h('div', { className: 'wp-live2d-section' },
-              h('div', { className: 'wp-live2d-label' }, '导入 ZIP（.zip，含 model3.json 与资源）'),
+              h('label', { className: 'wp-live2d-label', htmlFor: 'wp-live2d-file' }, '导入 ZIP（.zip，含 model3.json 与资源）'),
               h('input', {
+                id: 'wp-live2d-file',
                 ref: live2dFileRef,
                 type: 'file',
                 accept: '.zip,application/zip',
@@ -1599,9 +1789,10 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
               }),
             ),
             h('div', { className: 'wp-live2d-section' },
-              h('div', { className: 'wp-live2d-label' }, '或从 URL 导入（.model3.json，服务器需允许 CORS）'),
+              h('label', { className: 'wp-live2d-label', htmlFor: 'wp-live2d-url' }, '或从 URL 导入（.model3.json，服务器需允许 CORS）'),
               h('div', { className: 'wp-live2d-urlrow' },
                 h('input', {
+                  id: 'wp-live2d-url',
                   className: 'wp-live2d-url',
                   type: 'url',
                   placeholder: 'https://…/xxx.model3.json',
@@ -1639,9 +1830,10 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
               )
             ),
             h('div', { className: 'wp-live2d-section' },
-              h('div', { className: 'wp-live2d-label' }, `宠物大小（当前 ${Math.round(petScale * 100)}%）`),
+              h('label', { className: 'wp-live2d-label', htmlFor: 'wp-live2d-scale' }, `宠物大小（当前 ${Math.round(petScale * 100)}%）`),
               h('div', { className: 'wp-live2d-scalerow' },
                 h('input', {
+                  id: 'wp-live2d-scale',
                   className: 'wp-live2d-scale',
                   type: 'range',
                   min: '0.5',
@@ -1707,8 +1899,8 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
                 h('button', {
                   className: 'wp-live2d-remove',
                   type: 'button',
-                  onClick: () => void handleRemoveModel(),
-                }, '移除模型，恢复默认鲸鱼娘'),
+                  onClick: () => void handleUseDefaultModel(),
+                }, '恢复默认鲸鱼娘（保留最近模型）'),
               )
             ),
           ),

@@ -37,7 +37,7 @@ function staged(label, events) {
   }
 }
 
-test('slower stale import rolls back before the latest import commits', async () => {
+test('a durable import commits once started and the latest queued import supersedes it', async () => {
   const { createLive2DMutationQueue, replaceLive2DIfCurrent, cleanup } = await loadMutationModule()
   try {
     const queue = createLive2DMutationQueue()
@@ -47,7 +47,6 @@ test('slower stale import rolls back before the latest import commits', async ()
     let durable = 'previous'
     let operation = 1
     const storage = {
-      async load() { return durable },
       async save(value) {
         events.push(`save:${value}`)
         durable = value
@@ -72,13 +71,12 @@ test('slower stale import rolls back before the latest import commits', async ()
     )
     allowFirstSave.resolve()
 
-    assert.equal(await oldImport, false)
+    assert.equal(await oldImport, true)
     assert.equal(await newImport, true)
     assert.equal(durable, 'new')
     assert.deepEqual(events, [
       'save:old',
-      'discard:old',
-      'save:previous',
+      'commit:old',
       'save:new',
       'commit:new',
     ])
@@ -90,13 +88,13 @@ test('slower stale import rolls back before the latest import commits', async ()
 test('failed removal preserves the active renderer and durable model', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-live2d-remove-failure-'))
   try {
-    const { createLive2DMutationQueue, removeLive2DIfCurrent } = await loadMutationModule(temp)
+    const { createLive2DMutationQueue, useDefaultLive2DIfCurrent } = await loadMutationModule(temp)
     const queue = createLive2DMutationQueue()
     const active = { disposed: false }
     let durable = { id: 'active' }
 
     await assert.rejects(
-      removeLive2DIfCurrent(
+      useDefaultLive2DIfCurrent(
         queue,
         () => true,
         async () => { throw new Error('delete failed') },
@@ -111,7 +109,7 @@ test('failed removal preserves the active renderer and durable model', async () 
   }
 })
 
-test('remove queued during an import wins and stale model cannot reappear', async () => {
+test('default fallback queued during an import runs after its durable commit', async () => {
   const { createLive2DMutationQueue, replaceLive2DIfCurrent, cleanup } = await loadMutationModule()
   try {
     const queue = createLive2DMutationQueue()
@@ -121,7 +119,6 @@ test('remove queued during an import wins and stale model cannot reappear', asyn
     let durable = 'previous'
     let operation = 1
     const storage = {
-      async load() { return durable },
       async save(value) {
         events.push(`save:${value}`)
         durable = value
@@ -143,13 +140,12 @@ test('remove queued during an import wins and stale model cannot reappear', asyn
     const removing = queue.run(storage.remove)
     allowSave.resolve()
 
-    assert.equal(await importing, false)
+    assert.equal(await importing, true)
     await removing
     assert.equal(durable, null)
     assert.deepEqual(events, [
       'save:incoming',
-      'discard:incoming',
-      'save:previous',
+      'commit:incoming',
       'remove',
     ])
   } finally {
@@ -163,7 +159,6 @@ test('failed staged replacement leaves the previous durable model untouched', as
     const queue = createLive2DMutationQueue()
     let durable = 'previous'
     const storage = {
-      async load() { return durable },
       async save(value) { durable = value },
       async remove() { durable = null },
     }

@@ -13,6 +13,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Leave unknown/non-DeepSeek models unpriced and prefer each assistant message's actual model provenance.
 
 ### Added
+- Keep a five-model Live2D MRU library in IndexedDB with accessible one-click switching, current-model state, default-character fallback that preserves history, per-model permanent deletion, and cancellation of superseded imports.
 - Protect every private browser route with DSH Host/Origin and authenticated-session checks, bounded JSON bodies, stable errors, deduplicated task IDs, and corrupt-session row isolation.
 - Add independently revocable desktop-companion grants with one-time plaintext `wpg1` tokens, verifier-only credential storage, loopback/Host/Origin fencing, and Bearer-only companion routes.
 - Add browser pairing management; PowerShell stores tokens with CurrentUser DPAPI and Rust uses Windows Credential Manager.
@@ -23,7 +24,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ### Changed
 - Add strict TypeScript checking to local packaging, CI, and release validation.
-- Store the active Live2D config and assets together in one atomic IndexedDB record, eliminating the localStorage marker split.
+- Replace the localStorage model pointer with an atomic IndexedDB manifest plus per-model records, preserving config/resource consistency while supporting the bounded recent-model library.
 - Pause the PIXI ticker and idle motion loop while the page is hidden.
 - Serve immutable local Live2D runtime assets with long-lived caching while all private JSON responses remain `no-store`.
 

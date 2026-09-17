@@ -6,7 +6,9 @@
 
 ![Sanitized Whale-chan demo in DSH Web GUI](docs/images/whale-chan-demo.png)
 
-> The screenshot uses fixed example data (balance ¥88.88) and contains no real account information.
+![Sanitized Live2D recent-model quick-switch interface](docs/images/live2d-model-library.png)
+
+> The screenshots use fixed example data and sample model names; they contain no real account information.
 
 ## Current source highlights (`main`)
 
@@ -22,10 +24,11 @@
 - Supports Cubism 3/4/5 `.model3.json`; legacy Cubism 2 `.model.json` is not supported.
 - Interactions: mouse movement drives eye/head focus, clicking a hit area plays its same-named motion (commonly `TapBody`), and the settings panel can play a random motion or expression; models also provide idle motions, eye blink, breath, and physics.
 - Opening settings with the `⚙️` button does not cycle pages. The settings panel also includes a pet size slider (50%–200%) that scales only the pet model — bubbles and dialogs keep their size — persists the choice, and offers a one-click reset.
-- On import failure, incomplete assets, or missing WebGL, the default PNG stays active and the plugin never fails to start. A model can be removed and re-imported in the same page; each Live2D mount gets its own canvas so it never reuses a WebGL context destroyed by PIXI.
+- On import failure, incomplete assets, or missing WebGL, the current renderer (or default PNG) stays active and the plugin never fails to start. You can return to default and re-import in the same page; each Live2D mount gets its own canvas so it never reuses a WebGL context destroyed by PIXI.
 - The official Cubism Core is served locally by the plugin via a same-origin route, so the runtime does not depend on an external CDN. The PIXI/Live2D renderer loads only when Live2D is actually used.
-- ZIP extraction and validation run in a dedicated Worker, and the Live2D ticker pauses while the page is hidden. URL imports allow at most 256 assets, 32 MiB per file, 128 MiB total, and four concurrent requests.
-- Model metadata and assets now share one atomic IndexedDB record rather than a localStorage pointer that could diverge.
+- ZIP extraction and validation run in a dedicated Worker, and the Live2D ticker pauses while the page is hidden. URL imports allow at most 256 assets, 32 MiB per file, 128 MiB total, and four concurrent requests. A newer import or widget unmount aborts obsolete URL downloads and terminates the old ZIP Worker.
+- The recent-model library keeps up to five models including the active one. Importing or switching moves a model to the front; settings provide one-click switching, returning to default preserves history, each item can be permanently deleted, and a sixth model evicts the least recently used assets.
+- IndexedDB keeps the active ID and MRU order in a small atomic manifest while storing each model's assets separately; the former single-model `active` record migrates automatically.
 
 ### Secure desktop-companion pairing
 
