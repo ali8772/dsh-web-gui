@@ -55,6 +55,7 @@
 - Up to ten running sessions surface; subagent rows nest under their parent task family and auto-scroll past five rows.
 - `approval/asked` turns the status dot yellow; `approval/decided` clears it immediately.
 - The completion dialog splits the latest conversation and full-session totals, pricing each message with its actual model and time.
+- Non-DeepSeek prices come from a compact local catalog refreshed from [models.dev](https://models.dev/api.json) every 7 days. The host keeps the last valid snapshot and never blocks the state route on a failed refresh; external USD-per-1M-token prices use a fixed display conversion to CNY, while unknown models remain unpriced at ¥0.00.
 
 ### Whale-chan and refresh
 

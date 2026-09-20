@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -28,6 +28,81 @@ function line(type, data, time) {
 
 const pricedAt = Date.parse('2025-06-01T02:00:00.000Z')
 const zeroUnit = { input: 0, cacheRead: 0, output: 0 }
+
+test('priceAt uses provider-specific external prices for non-DeepSeek models', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-pricing-external-'))
+  try {
+    const { priceAt } = await loadModule(temp, 'src/host/pricing.ts', 'pricing-external')
+    const price = priceAt('gpt-5.6-sol', Date.parse('2026-09-20T02:00:00.000Z'), {
+      provider: 'codex',
+      externalCatalog: {
+        version: 1,
+        fetchedAt: 1,
+        providers: {
+          codex: {
+            models: {
+              'gpt-5.6-sol': { usd: { input: 4, cacheRead: 0.4, output: 20 } },
+            },
+          },
+        },
+      },
+    })
+    assert.deepEqual(price.usd, { input: 4, cacheRead: 0.4, output: 20 })
+    assert.ok(price.cny.input > 0, 'external USD prices should have a CNY display conversion')
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('normalizeModelsDevCatalog keeps explicit cache-free prices and falls back missing cache prices', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-pricing-normalize-'))
+  try {
+    const { normalizeModelsDevCatalog } = await loadModule(temp, 'src/host/pricing-catalog.ts', 'pricing-normalize')
+    const catalog = normalizeModelsDevCatalog({
+      openai: { models: {
+        cached: { cost: { input: 1, output: 2, cache_read: 0 } },
+        uncached: { cost: { input: 3, output: 4 } },
+      } },
+    }, { fetchedAt: 10 })
+    assert.deepEqual(catalog.providers.openai.models.cached.usd, { input: 1, cacheRead: 0, output: 2 })
+    assert.deepEqual(catalog.providers.openai.models.uncached.usd, { input: 3, cacheRead: 3, output: 4 })
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('pricing manager refreshes weekly and keeps the last valid catalog on failure', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-pricing-manager-'))
+  try {
+    const { createPricingManager, PRICING_REFRESH_MS } = await loadModule(temp, 'src/host/pricing-catalog.ts', 'pricing-manager')
+    let now = Date.parse('2026-09-20T00:00:00.000Z')
+    let calls = 0
+    const payload = JSON.stringify({
+      openai: { models: { 'gpt-5': { cost: { input: 1, output: 2, cache_read: 0.1 } } } },
+    })
+    const response = (body, ok = true) => new Response(body, { status: ok ? 200 : 503, headers: { 'content-type': 'application/json' } })
+    const manager = createPricingManager({
+      home: temp,
+      now: () => now,
+      fetchImpl: async () => { calls += 1; return response(payload) },
+    })
+    await manager.refresh()
+    assert.equal(calls, 1)
+    assert.deepEqual(manager.snapshot().lookup('gpt-5', now, 'openai').usd, { input: 1, cacheRead: 0.1, output: 2 })
+    await manager.refresh()
+    assert.equal(calls, 1, 'fresh catalog must not refetch')
+    now += PRICING_REFRESH_MS + 1
+    const staleSnapshot = manager.snapshot()
+    await manager.refresh()
+    assert.equal(calls, 2)
+    assert.equal(manager.snapshot().revision, staleSnapshot.revision, 'same valid payload keeps its revision')
+    await writeFile(manager.cachePath, JSON.stringify({ version: 1, fetchedAt: now, providers: {} }), 'utf8')
+    const recovered = createPricingManager({ home: temp, now: () => now, fetchImpl: async () => response('{bad', false) })
+    assert.deepEqual(recovered.snapshot().lookup('gpt-5', now, 'openai').usd, { input: 0, cacheRead: 0, output: 0 })
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
 
 test('priceAt leaves unknown and non-DeepSeek models unpriced', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-pricing-'))

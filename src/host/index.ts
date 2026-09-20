@@ -34,6 +34,7 @@ import { observeBalanceSpend } from './balance-spend.ts'
 import { fetchOpenCodeGoUsage } from './opencode.ts'
 import { progressForSession, sessionSummary } from './tasks.ts'
 import { createSessionProjection } from './session-projection.ts'
+import { createPricingManager, type PricingManager } from './pricing-catalog.ts'
 import {
   createCompanionGrants,
   isCompanionLoopback,
@@ -282,7 +283,7 @@ function resolveDshHome(ctx: Context): string {
  * 每个成功余额观察都会立即写入账本；不再使用消费缓存，避免吞掉新余额或
  * 跨北京时间午夜后仍返回昨天的「今日」。
  */
-function computeSpend(ctx: Context, balance: BalanceSnapshot | null, nowMs = Date.now()): SpendSnapshot {
+function computeSpend(ctx: Context, balance: BalanceSnapshot | null, pricing: PricingManager, nowMs = Date.now()): SpendSnapshot {
   const home = resolveDshHome(ctx)
   const ledger = observeBalanceSpend(
     home,
@@ -291,7 +292,7 @@ function computeSpend(ctx: Context, balance: BalanceSnapshot | null, nowMs = Dat
       : { currency: balance.currency, totalBalance: balance.totalBalance },
     nowMs,
   )
-  const aggregates = aggregateSessionSpend(home)
+  const aggregates = aggregateSessionSpend(home, { pricing: pricing.snapshot() })
   const window = spendWindowDays(nowMs, SPEND_WINDOW_DAYS)
   const todayCalls = sumWindow(aggregates.byDay, window.endDay, window.endDay).calls
   const days7Calls = sumWindow(aggregates.byDay, window.startDay, window.endDay).calls
@@ -307,6 +308,8 @@ function computeSpend(ctx: Context, balance: BalanceSnapshot | null, nowMs = Dat
 export function apply(ctx: Context): void {
   const companionGrants = createCompanionGrants(ctx.credentials)
   const sessions = createSessionProjection()
+  const pricing = createPricingManager({ home: resolveDshHome(ctx) })
+  void pricing.refresh().catch(() => {})
 
   ctx.effect(
     () => ctx.webServer.register({
@@ -328,7 +331,7 @@ export function apply(ctx: Context): void {
         try {
           // 消费依赖本次余额观察，必须顺序执行，不能与余额请求并行。
           const balance = await fetchBalance(ctx)
-          const spend = computeSpend(ctx, balance)
+          const spend = computeSpend(ctx, balance, pricing)
           sendJson(res, 200, {
             ok: true,
             fetchedAt: Date.now(),
@@ -398,7 +401,7 @@ export function apply(ctx: Context): void {
           }
           const home = resolveDshHome(ctx)
           const index = sessions.index(home)
-          const summary = sessionSummary(index, id)
+          const summary = sessionSummary(index, id, { pricing: pricing.snapshot() })
           sendJson(res, 200, { ok: true, fetchedAt: Date.now(), summary })
         } catch (error) {
           if (sendRequestError(res, error)) return
@@ -543,7 +546,7 @@ export function apply(ctx: Context): void {
         }
         try {
           const balance = await fetchBalance(ctx)
-          const spend = computeSpend(ctx, balance)
+          const spend = computeSpend(ctx, balance, pricing)
           sendJson(res, 200, { ok: true, fetchedAt: Date.now(), balance, spend })
         } catch (error) {
           ctx.logger?.warn?.('dsh-whale-pet: companion state failed')
@@ -612,7 +615,7 @@ export function apply(ctx: Context): void {
             return
           }
           const index = sessions.index(resolveDshHome(ctx))
-          sendJson(res, 200, { ok: true, fetchedAt: Date.now(), summary: sessionSummary(index, id) })
+          sendJson(res, 200, { ok: true, fetchedAt: Date.now(), summary: sessionSummary(index, id, { pricing: pricing.snapshot() }) })
         } catch (error) {
           if (sendRequestError(res, error)) return
           ctx.logger?.warn?.('dsh-whale-pet: companion task summary failed')

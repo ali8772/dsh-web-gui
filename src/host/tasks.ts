@@ -14,7 +14,7 @@
 
 import { readFileSync, statSync } from 'node:fs'
 import { constants, zstdDecompressSync } from 'node:zlib'
-import { createPriceCache } from './pricing.ts'
+import { createPriceCache, type PriceAtResult, type PricingSnapshot } from './pricing.ts'
 import {
   fileRevision,
   readLogContent,
@@ -391,10 +391,17 @@ function usageByModel(events: readonly PricedUsage[]): ModelUsageSummary[] {
 }
 
 /** 计算单个会话的 token/费用汇总（带修订缓存）。 */
-export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id: string): SessionSummary {
+export interface SessionSummaryOptions {
+  /** Immutable pricing snapshot used for this summary. */
+  pricing?: PricingSnapshot
+  /** Provider-aware lookup override for deterministic tests and adapters. */
+  price?: (model: string, timeMs: number, provider?: string) => PriceAtResult
+}
+
+export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id: string, options: SessionSummaryOptions = {}): SessionSummary {
   const meta = logIndex.get(id)
   if (meta === undefined) {
-    summaryCache.delete(id)
+    for (const key of summaryCache.keys()) if (key.endsWith(`\u0000${id}\u0000builtin`)) summaryCache.delete(key)
     return {
       id, found: false, model: 'unknown',
       calls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, costUsd: 0, models: [],
@@ -412,7 +419,10 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
     }
   }
   const rev = `${stat.mtimeMs}\u0000${stat.size}`
-  const cached = summaryCache.get(id)
+  const pricing = options.pricing
+  const price = options.price ?? (pricing !== undefined ? pricing.lookup : createPriceCache())
+  const cacheKey = `${meta.path}\u0000${id}\u0000${pricing?.revision ?? 'builtin'}`
+  const cached = summaryCache.get(cacheKey)
   if (cached !== undefined && cached.rev === rev) return cached.summary
 
   const content = readLogContent(meta)
@@ -431,8 +441,7 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
   let totalOutputTokens = 0
   let totalCost = 0
   let totalCostUsd = 0
-  const price = createPriceCache()
-  const totalEvents = replayLogContent(content, (model, timeMs) => price(model, timeMs))
+  const totalEvents = replayLogContent(content, (model, timeMs, provider) => price(model, timeMs, provider === '' ? undefined : provider))
   for (const event of totalEvents) {
     totalCalls += 1
     totalInputTokens += event.inputTokens
@@ -496,7 +505,7 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
       data: { header: { config: { provider: providerAtLastUser, model: modelAtLastUser } } },
     })
     const contentAfter = `${modelHeader}\n${lines.slice(lastUserMessageIndex).join('\n')}`
-    currentEvents = replayLogContent(contentAfter, (m, t) => price(m, t))
+    currentEvents = replayLogContent(contentAfter, (m, t, p) => price(m, t, p))
     for (const event of currentEvents) {
       calls += 1
       inputTokens += event.inputTokens
@@ -534,7 +543,7 @@ export function sessionSummary(logIndex: ReadonlyMap<string, SessionLogMeta>, id
     totalCostUsd: Math.round(totalCostUsd * 10000) / 10000,
     totalModels: usageByModel(totalEvents),
   }
-  summaryCache.set(id, { rev, summary })
+  summaryCache.set(cacheKey, { rev, summary })
   trimProjectionCache(summaryCache)
   return summary
 }

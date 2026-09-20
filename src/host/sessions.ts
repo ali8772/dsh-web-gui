@@ -15,7 +15,7 @@ import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs'
 import { join, basename, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { constants, zstdDecompressSync } from 'node:zlib'
-import { createPriceCache, costOf, ZERO_PRICE, type PriceAtResult } from './pricing.ts'
+import { createPriceCache, costOf, type PriceAtResult, type PricingSnapshot } from './pricing.ts'
 
 const ZSTD_MAGIC = 0xFD2FB528
 const DAY_TIMEZONE = 'Asia/Shanghai'
@@ -289,7 +289,7 @@ interface PricedEvent {
  * 回放一份会话日志原文：`request/header` 记录当前路由，`assistant/message`
  * 携带的 usage 仅在官方 DeepSeek 路由上按官方价格计价。单个坏行/坏事件跳过。
  */
-export function replayLogContent(content: string, price: (model: string, timeMs: number) => PriceAtResult): PricedEvent[] {
+export function replayLogContent(content: string, price: (model: string, timeMs: number, provider?: string) => PriceAtResult): PricedEvent[] {
   const out: PricedEvent[] = []
   let currentProvider = ''
   let currentModel = 'unknown'
@@ -332,9 +332,7 @@ export function replayLogContent(content: string, price: (model: string, timeMs:
         cacheReadTokens: toFinite(usage.cacheReadTokens),
         outputTokens: toFinite(usage.outputTokens),
       },
-      eventProvider === '' || eventProvider === 'deepseek' || eventProvider === 'deepseek-official'
-        ? price(eventModel, time)
-        : { ...ZERO_PRICE, mode: 'flat' },
+      price(eventModel, time, eventProvider === '' ? undefined : eventProvider),
     )
     out.push({
       provider: eventProvider,
@@ -363,6 +361,10 @@ export interface AggregateOptions {
   reader?: SessionReader
   /** 聚合窗口内的事件上限，防御异常大日志。 */
   maxEvents?: number
+  /** Immutable pricing snapshot; default keeps built-in DeepSeek pricing. */
+  pricing?: PricingSnapshot
+  /** Provider-aware lookup for non-DeepSeek routes. */
+  price?: (model: string, timeMs: number, provider?: string) => PriceAtResult
 }
 
 /**
@@ -375,7 +377,9 @@ export function aggregateSessionSpend(home: string, options: AggregateOptions = 
     revision: fileRevision,
     readContent: readLogContent,
   }
-  const price = createPriceCache()
+  const pricing = options.pricing
+  const price = options.price
+    ?? (pricing !== undefined ? pricing.lookup : createPriceCache())
   const byDay = new Map<string, MutableDaySpend>()
   const maxEvents = options.maxEvents ?? 200_000
   let sessionsWithUsage = 0
@@ -385,14 +389,15 @@ export function aggregateSessionSpend(home: string, options: AggregateOptions = 
   for (const meta of logs) {
     const rev = reader.revision(meta)
     if (rev === '') continue
-    let cached = logCache.get(meta.id)
+    const cacheKey = `${meta.path}\u0000${meta.id}\u0000${options.pricing?.revision ?? 'builtin'}`
+    let cached = logCache.get(cacheKey)
     if (cached === undefined || cached.rev !== rev) {
       const content = reader.readContent(meta)
       if (content === undefined) continue
       const priced = replayLogContent(content, price)
       if (priced.length === 0) continue
       cached = { rev, priced }
-      logCache.set(meta.id, cached)
+      logCache.set(cacheKey, cached)
       if (logCache.size > 400) {
         // 防缓存无限增长：清掉最旧的 200 条。
         const keys = [...logCache.keys()]

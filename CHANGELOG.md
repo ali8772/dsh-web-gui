@@ -7,12 +7,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 > The changes in this section are available from GitHub `main` starting at commit [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387). They have not yet been assigned a new release version or tag; the package metadata still reports `0.4.1`.
 
 ### Fixed
+- Price non-DeepSeek provider/model routes from a validated weekly `models.dev` snapshot instead of forcing every external model to zero; preserve exact provider separation and DeepSeek's curated historical policies.
 - Require Node.js 24 consistently because the host session reader uses Node's Zstandard API.
 - Recover newline-complete task and usage events from a torn final Zstandard session-log frame.
 - Track all running sessions separately from the ten-row display window, preventing reordering and parent grouping from producing false completion dialogs.
 - Leave unknown/non-DeepSeek models unpriced and prefer each assistant message's actual model provenance.
 
 ### Added
+- Add an atomic, size-bounded, last-known-good local price catalog under `$DSH_HOME/whale-pet/models-dev.json`, with stale-while-revalidate refresh, retry backoff, cache-read fallback, provenance, and deterministic USD-to-CNY estimate conversion.
 - Keep a five-model Live2D MRU library in IndexedDB with accessible one-click switching, current-model state, default-character fallback that preserves history, per-model permanent deletion, and cancellation of superseded imports.
 - Protect every private browser route with DSH Host/Origin and authenticated-session checks, bounded JSON bodies, stable errors, deduplicated task IDs, and corrupt-session row isolation.
 - Add independently revocable desktop-companion grants with one-time plaintext `wpg1` tokens, verifier-only credential storage, loopback/Host/Origin fencing, and Bearer-only companion routes.

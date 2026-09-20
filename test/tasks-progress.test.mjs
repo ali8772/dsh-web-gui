@@ -28,6 +28,13 @@ function line(type, data, time) {
   return `${JSON.stringify({ type, data, ...(time === undefined ? {} : { time }) })}\n`
 }
 
+function priceAtForTest(model, timeMs, provider, externalCatalog) {
+  if (provider === 'codex' && model === 'gpt-5.6-sol') {
+    return { cny: { input: 28.8, cacheRead: 2.88, output: 144 }, usd: externalCatalog.providers.codex.models[model].usd, mode: 'flat', source: 'models.dev' }
+  }
+  return { cny: { input: 0, cacheRead: 0, output: 0 }, usd: { input: 0, cacheRead: 0, output: 0 }, mode: 'flat', source: 'none' }
+}
+
 test('sessionSummary separates the latest conversation from full-session usage', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-summary-test-'))
   try {
@@ -138,6 +145,32 @@ test('sessionSummary keeps providers with the same model id in separate usage ro
       { provider: 'deepseek-official', model: 'deepseek-chat', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 2, costUsd: 0.28 },
       { provider: 'openai', model: 'deepseek-chat', calls: 1, inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0, cost: 0, costUsd: 0 },
     ])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('sessionSummary recomputes non-DeepSeek cost when an external pricing snapshot is supplied', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-external-summary-test-'))
+  try {
+    const sessionId = 'external-model-session'
+    const logPath = join(temp, 'session.jsonl')
+    const { sessionSummary } = await loadTasksModule(temp)
+    const logIndex = new Map([[sessionId, { id: sessionId, path: logPath }]])
+    await writeFile(logPath, line('assistant/message', {
+      message: { source: { kind: 'model', provider: 'codex', model: 'gpt-5.6-sol' } },
+      usage: { inputTokens: 1_000_000, cacheReadTokens: 200_000, outputTokens: 300_000 },
+    }, Date.parse('2025-06-01T02:00:00.000Z')), 'utf8')
+    const catalog = {
+      version: 1,
+      fetchedAt: 2,
+      providers: { codex: { models: { 'gpt-5.6-sol': { usd: { input: 4, cacheRead: 0.4, output: 20 } } } } },
+    }
+    const summary = sessionSummary(logIndex, sessionId, {
+      pricing: { revision: 'catalog-2', source: 'models.dev', fetchedAt: 2, lookup: (model, timeMs, provider = '') => priceAtForTest(model, timeMs, provider, catalog) },
+    })
+    assert.equal(summary.totalCostUsd, 10.08)
+    assert.equal(summary.totalCost > 0, true)
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

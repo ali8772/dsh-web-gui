@@ -77,7 +77,10 @@ async function startHarness(temp, queue) {
   }
   apply(ctx)
   let nowMs = Date.parse('2026-08-31T02:00:00.000Z')
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (input) => {
+    if (typeof input === 'string' && input === 'https://models.dev/api.json') {
+      return { ok: false, status: 503, json: async () => ({}) }
+    }
     const [total, currency] = queue.balances[queue.index++]
     return { ok: true, json: async () => balanceBody(total, currency) }
   }

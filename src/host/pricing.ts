@@ -36,6 +36,28 @@ export interface DualCurrencyUnit {
   readonly usd: PriceUnit
 }
 
+/** Provider/model price record from the weekly external catalog (USD per 1M tokens). */
+export interface ExternalPriceRecord {
+  readonly usd: PriceUnit
+  readonly cny?: PriceUnit
+}
+
+/** Normalized provider-aware catalog projected from models.dev/api.json. */
+export interface ExternalPriceCatalog {
+  readonly version: 1
+  readonly source?: string
+  readonly fetchedAt: number
+  readonly revision?: string
+  readonly usdToCny?: number
+  readonly sha256?: string
+  readonly providers: Readonly<Record<string, {
+    readonly models: Readonly<Record<string, ExternalPriceRecord>>
+  }>>
+}
+
+/** Approximate display conversion for external USD-only catalog prices. */
+export const DEFAULT_USD_TO_CNY = 7.2
+
 export interface PricePolicy {
   readonly since: string
   readonly label: string
@@ -166,6 +188,36 @@ export interface PriceAtResult {
   readonly usd: PriceUnit
   /** 'flat' | 'peak' | 'offPeak'。 */
   readonly mode: 'flat' | 'peak' | 'offPeak'
+  /** Price provenance, useful for explaining estimates in diagnostics. */
+  readonly source: 'official' | 'models.dev' | 'none'
+}
+
+export interface PriceAtOptions {
+  timezone?: string
+  peakWindows?: ReadonlyArray<readonly [number, number]>
+  policies?: readonly PricePolicy[]
+  provider?: string
+  externalCatalog?: ExternalPriceCatalog
+  usdToCny?: number
+}
+
+export type PriceLookup = (model: string, timeMs: number, provider?: string) => PriceAtResult
+export type PriceResolver = (model: string, timeMs: number, options?: PriceAtOptions) => PriceAtResult
+
+export function routePriceAt(
+  provider: string,
+  model: string,
+  timeMs: number,
+  opts?: PriceAtOptions,
+): PriceAtResult {
+  return priceAt(model, timeMs, { ...opts, provider })
+}
+
+export interface PricingSnapshot {
+  readonly revision: string
+  readonly source: 'builtin' | 'models.dev' | 'mixed'
+  readonly fetchedAt: number | null
+  readonly lookup: PriceLookup
 }
 
 /**
@@ -183,13 +235,29 @@ export interface PriceAtResult {
 export function priceAt(
   model: string,
   timeMs: number,
-  opts?: {
-    timezone?: string
-    peakWindows?: ReadonlyArray<readonly [number, number]>
-    policies?: readonly PricePolicy[]
-  },
+  opts?: PriceAtOptions | string,
 ): PriceAtResult {
-  const { timezone = DEFAULT_TIMEZONE, peakWindows = DEFAULT_PEAK_WINDOWS, policies = OFFICIAL_PRICING_POLICIES } = opts ?? {}
+  const normalizedOptions = typeof opts === 'string' ? { provider: opts } : opts
+  const {
+    timezone = DEFAULT_TIMEZONE,
+    peakWindows = DEFAULT_PEAK_WINDOWS,
+    policies = OFFICIAL_PRICING_POLICIES,
+    provider = '',
+    externalCatalog,
+    usdToCny = DEFAULT_USD_TO_CNY,
+  } = normalizedOptions ?? {}
+  if (provider !== '' && provider !== 'deepseek' && provider !== 'deepseek-official') {
+    const external = externalCatalog?.providers[provider]?.models[model]
+    if (external !== undefined) {
+      const cny = external.cny ?? {
+        input: external.usd.input * usdToCny,
+        cacheRead: external.usd.cacheRead * usdToCny,
+        output: external.usd.output * usdToCny,
+      }
+      return { cny, usd: external.usd, mode: 'flat', source: 'models.dev' }
+    }
+    return { cny: ZERO_UNIT, usd: ZERO_UNIT, mode: 'flat', source: 'none' }
+  }
   const peak = isPeak(timeMs, timezone, peakWindows)
   const applicable = policies.filter((policy) => timeMs >= Date.parse(policy.since))
   const scope = applicable.length > 0 ? applicable : [policies[0]!]
@@ -224,17 +292,19 @@ export function priceAt(
     cny: unit.cny,
     usd: unit.usd,
     mode: winner.peak !== undefined && winner.offPeak !== undefined ? (peak ? 'peak' : 'offPeak') : 'flat',
+    source: named ? 'official' : 'none',
   }
 }
 
-/** 一次性计算一批消息的费用：`priceAt` 结果按 (model, hourBucket) 记忆化。 */
-export function createPriceCache() {
+/** 一次性计算一批消息的费用：按 provider/model/hour 与目录版本记忆化。 */
+export function createPriceCache(opts?: PriceAtOptions) {
   const cache = new Map<string, PriceAtResult>()
-  return (model: string, timeMs: number): PriceAtResult => {
-    const key = `${model}\u0000${Math.floor(timeMs / 3_600_000)}`
+  return (model: string, timeMs: number, provider = ''): PriceAtResult => {
+    const catalogRevision = opts?.externalCatalog?.revision ?? opts?.externalCatalog?.fetchedAt ?? 0
+    const key = `${provider}\u0000${model}\u0000${catalogRevision}\u0000${Math.floor(timeMs / 3_600_000)}`
     let hit = cache.get(key)
     if (hit === undefined) {
-      hit = priceAt(model, timeMs)
+      hit = priceAt(model, timeMs, { ...opts, provider })
       cache.set(key, hit)
     }
     return hit
