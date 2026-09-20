@@ -10,7 +10,8 @@
  * 余额通过凭据服务解析 `DEEPSEEK_API_KEY`（与 llm-deepseek 适配器同一引用），
  * 请求 DeepSeek 官方 `/user/balance`。消费金额以相邻余额快照的下降值为准：
  * 首次观察建立基线，后续下降按北京时间记入当日；充值导致的余额上升只更新
- * 基线，不抵扣既有消费。会话日志仅用于补充调用次数和任务进度。
+ * 基线，不抵扣既有消费。会话日志仅用于补充调用次数和任务进度，并兼容当前 DSH 的
+ * `session.v3.jsonl(.zstd)` 持久化文件。
  * OpenCode Go 额度由官方网关 `https://opencode.ai/zen/go/v1/usage` 提供，
  * 凭证优先 `OPENCODE_GO_API_KEY`，回退 opencode CLI 登录文件；密钥不出宿主。
  * API Key 永不出宿主：浏览器只访问这些本地路由。

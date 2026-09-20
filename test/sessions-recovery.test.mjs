@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
@@ -100,6 +100,21 @@ test('readLogContent rejects structural Zstandard corruption instead of treating
       () => readLogContent({ id: 'corrupt', path: logPath }),
       /corrupt Zstandard session log: invalid frame magic/,
     )
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('listSessionLogs discovers versioned v3 session artifacts and prefers them over legacy duplicates', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-session-artifacts-'))
+  try {
+    const { listSessionLogs } = await loadSessionsModule(temp)
+    const workspace = join(temp, 'sessions', '--workspace--', 'same-id')
+    await mkdir(workspace, { recursive: true })
+    await writeFile(join(workspace, 'session.jsonl.zstd'), checkedFrame(line('session', { version: 2 })))
+    await writeFile(join(workspace, 'session.v3.jsonl.zstd'), checkedFrame(line('session', { version: 3 })))
+    const logs = listSessionLogs(temp)
+    assert.deepEqual(logs.map(({ id, path }) => ({ id, name: basename(path) })), [{ id: 'same-id', name: 'session.v3.jsonl.zstd' }])
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

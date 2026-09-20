@@ -5,7 +5,8 @@
  * v0.2.1 起，消费金额严格由余额变化账本计算；本模块的聚合结果只用于
  * 展示调用次数，并保留旧价格字段以兼容内部结构。
  *
- * 日志格式：`$DSH_HOME/sessions/<workspace>/<session-id>/session.jsonl(.zstd)`。
+ * 日志格式：`$DSH_HOME/sessions/<workspace>/<session-id>/session.jsonl(.zstd)` 或
+ * 当前版本的 `session.v3.jsonl(.zstd)`。同一会话同时存在多个版本时优先当前版本。
  * `.zstd` 为多个可独立解码的 Zstandard frame 拼接（含 torn 尾帧），与
  * `dsh-session-persistence-jsonl` 的容器语义一致。
  */
@@ -78,7 +79,10 @@ export function dshHome(homeFn?: (sub: string) => string): string {
 }
 
 function isSessionArtifact(filename: string): boolean {
-  return filename === 'session.jsonl' || filename === 'session.jsonl.zstd'
+  return filename === 'session.jsonl'
+    || filename === 'session.jsonl.zstd'
+    || filename === 'session.v3.jsonl'
+    || filename === 'session.v3.jsonl.zstd'
 }
 
 /** 递归枚举 `$DSH_HOME/sessions` 下的会话日志文件。 */
@@ -103,6 +107,15 @@ export function listSessionLogs(home: string): SessionLogMeta[] {
   }
   walk(root)
   // 稳定顺序，避免扫描抖动。
+  // A workspace can briefly expose both legacy and versioned artifacts while the
+  // persistence layer upgrades. Prefer the newest versioned file for one session.
+  const preferred = new Map<string, SessionLogMeta>()
+  for (const meta of out) {
+    const previous = preferred.get(meta.id)
+    if (previous === undefined || meta.path.includes('session.v3.') || !previous.path.includes('session.v3.')) preferred.set(meta.id, meta)
+  }
+  out.length = 0
+  out.push(...preferred.values())
   out.sort((a, b) => a.path.localeCompare(b.path))
   return out
 }

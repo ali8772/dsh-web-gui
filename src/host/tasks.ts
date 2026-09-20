@@ -5,6 +5,8 @@
  *  - `tool/call` / `step/start` / `turn/start`：当前轮次、步骤与正在执行的工具。
  *  - `approval/asked` / `approval/decided`：进入或离开用户权限审批等待。
  *
+ * 兼容当前 DSH 的 `session.v3.jsonl(.zstd)` 持久化文件，由 sessions.ts 统一枚举。
+ *
  * 性能：会话日志按 zstd frame 追加写入，这里以「帧游标」增量解析 —— 首次
  * 全量回放一次，之后只解压新增帧，轮询开销极小。未变化（mtime+size 相同）
  * 时只做 stat，完全不读文件。

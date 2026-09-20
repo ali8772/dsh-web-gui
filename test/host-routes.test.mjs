@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { zstdCompressSync } from 'node:zlib'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
@@ -98,6 +99,32 @@ test('private state data is rejected through the DSH connection seam before doma
 
     assert.equal(response.result().status, 401)
     assert.equal(harness.credentialReads(), 0, 'an unauthenticated request must not reach balance credentials')
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('tasks route reads v3 session logs from the configured DSH home', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-routes-test-'))
+  try {
+    const sessionId = 'v3-progress'
+    const sessionDir = join(temp, 'sessions', '--workspace--', sessionId)
+    await mkdir(sessionDir, { recursive: true })
+    await writeFile(join(sessionDir, 'session.v3.jsonl.zstd'), zstdCompressSync(Buffer.from([
+      JSON.stringify({ type: 'session', version: 3 }),
+      JSON.stringify({ type: 'todo/write', data: { todos: [{ content: 'ship', status: 'in_progress' }] } }),
+    ].join('\n') + '\n')))
+    const harness = await startHarness(temp, undefined, { get(name) { return name === 'dshHomePath' ? () => temp : undefined } })
+    const response = makeResponse()
+    await harness.routes.get('/api/whale-pet/tasks').handler(
+      request('POST', [JSON.stringify({ ids: [sessionId] })]),
+      response,
+    )
+    const body = JSON.parse(response.result().body)
+    assert.equal(response.result().status, 200)
+    assert.equal(body.tasks[0].found, true)
+    assert.equal(body.tasks[0].totalTodos, 1)
+    assert.equal(body.tasks[0].pct, 0)
   } finally {
     await rm(temp, { recursive: true, force: true })
   }
