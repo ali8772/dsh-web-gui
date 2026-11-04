@@ -105,7 +105,7 @@ test('readLogContent rejects structural Zstandard corruption instead of treating
   }
 })
 
-test('listSessionLogs discovers versioned v3 session artifacts and prefers them over legacy duplicates', async () => {
+test('listSessionLogs discovers versioned session artifacts and prefers the highest version', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-session-artifacts-'))
   try {
     const { listSessionLogs } = await loadSessionsModule(temp)
@@ -113,8 +113,9 @@ test('listSessionLogs discovers versioned v3 session artifacts and prefers them 
     await mkdir(workspace, { recursive: true })
     await writeFile(join(workspace, 'session.jsonl.zstd'), checkedFrame(line('session', { version: 2 })))
     await writeFile(join(workspace, 'session.v3.jsonl.zstd'), checkedFrame(line('session', { version: 3 })))
+    await writeFile(join(workspace, 'session.v4.jsonl.zstd'), checkedFrame(line('session', { version: 4 })))
     const logs = listSessionLogs(temp)
-    assert.deepEqual(logs.map(({ id, path }) => ({ id, name: basename(path) })), [{ id: 'same-id', name: 'session.v3.jsonl.zstd' }])
+    assert.deepEqual(logs.map(({ id, path }) => ({ id, name: basename(path) })), [{ id: 'same-id', name: 'session.v4.jsonl.zstd' }])
   } finally {
     await rm(temp, { recursive: true, force: true })
   }
@@ -284,6 +285,65 @@ test('readLogContent recovers complete JSONL records from a torn final Zstandard
       committed + recovered,
       'the committed line in the torn frame is visible, while its partial final line is discarded',
     )
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('aggregateSessionSpend caches logs with no billable usage', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-empty-cache-'))
+  try {
+    const { aggregateSessionSpend } = await loadSessionsModule(temp)
+    let reads = 0
+    const reader = {
+      listLogs: () => [{ id: 'empty', path: join(temp, 'empty-session.jsonl') }],
+      revision: () => 'stable-revision',
+      readContent: () => {
+        reads += 1
+        return line('todo/write', { todos: [] })
+      },
+    }
+    aggregateSessionSpend(temp, { reader })
+    aggregateSessionSpend(temp, { reader })
+    assert.equal(reads, 1, 'a log without billable events must be cached, not re-read')
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('windowed aggregation skips logs last modified before the window', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-window-mtime-'))
+  try {
+    const { aggregateSessionSpend, shanghaiDay } = await loadSessionsModule(temp)
+    const now = Date.now()
+    const usageLine = (time) => `${JSON.stringify({
+      type: 'assistant/message',
+      time,
+      data: {
+        message: { source: { provider: 'openai', model: 'gpt-5' } },
+        usage: { inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 },
+      },
+    })}\n`
+    const reads = []
+    const logs = [
+      { id: 'old', path: join(temp, 'old-session.jsonl') },
+      { id: 'recent', path: join(temp, 'recent-session.jsonl') },
+    ]
+    const reader = {
+      listLogs: () => logs,
+      revision: (meta) => `rev-${meta.id}`,
+      modifiedAt: (meta) => (meta.id === 'old' ? now - 30 * 86_400_000 : now),
+      readContent: (meta) => {
+        reads.push(meta.id)
+        return usageLine(now)
+      },
+    }
+    const window = { startDay: shanghaiDay(now - 6 * 86_400_000), endDay: shanghaiDay(now) }
+    const aggregates = aggregateSessionSpend(temp, { reader, window })
+    assert.deepEqual(reads, ['recent'], 'only logs written inside the window are replayed')
+    assert.deepEqual(aggregates.models.map((row) => ({ provider: row.provider, model: row.model, calls: row.calls })), [
+      { provider: 'openai', model: 'gpt-5', calls: 1 },
+    ])
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

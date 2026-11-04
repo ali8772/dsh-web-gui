@@ -30,7 +30,7 @@ async function loadWidgetModule(temp) {
             ? 'export const createPortal = (value) => value'
             : path === 'react-jsx-runtime'
               ? 'export const jsx = () => null; export const jsxs = jsx; export const Fragment = Symbol()'
-              : 'export const createElement = () => null; export const useEffect = () => {}; export const useRef = (value) => ({ current: value }); export const useState = (value) => [value, () => {}]',
+              : 'export const createElement = () => null; export const useEffect = () => {}; export const useMemo = (factory) => factory(); export const useRef = (value) => ({ current: value }); export const useState = (value) => [value, () => {}]',
         }))
       },
     }],

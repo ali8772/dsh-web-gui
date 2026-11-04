@@ -427,3 +427,83 @@ test('every private data route rejects untrusted requests before reading bodies 
     await rm(temp, { recursive: true, force: true })
   }
 })
+
+test('pricing route serves the weekly price table and 7-day usage priced by it', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-routes-test-'))
+  try {
+    const now = Date.now()
+    const catalogDir = join(temp, 'whale-pet')
+    await mkdir(catalogDir, { recursive: true })
+    await writeFile(join(catalogDir, 'models-dev.json'), JSON.stringify({
+      version: 1,
+      source: 'https://models.dev/api.json',
+      fetchedAt: now,
+      revision: 'fixture-revision',
+      usdToCny: 7.2,
+      providers: {
+        openai: {
+          name: 'OpenAI',
+          models: { 'gpt-5': { usd: { input: 1, cacheRead: 0.1, output: 2 } } },
+        },
+      },
+    }))
+    const sessionDir = join(temp, 'sessions', 'workspace', 'priced-session')
+    await mkdir(sessionDir, { recursive: true })
+    await writeFile(join(sessionDir, 'session.v4.jsonl'), `${JSON.stringify({
+      type: 'assistant/message',
+      time: now,
+      data: {
+        message: { source: { provider: 'openai', model: 'gpt-5' } },
+        usage: { inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 },
+      },
+    })}\n`)
+
+    const harness = await startHarness(temp, undefined, {
+      get(name) { return name === 'dshHomePath' ? () => temp : undefined },
+    })
+    const response = makeResponse()
+    await harness.routes.get('/api/whale-pet/pricing').handler(request('GET'), response)
+    const body = JSON.parse(response.result().body)
+
+    assert.equal(response.result().status, 200)
+    assert.equal(body.ok, true)
+    assert.equal(body.pricing.source, 'mixed')
+    assert.equal(body.pricing.revision, 'fixture-revision')
+    assert.ok(body.pricing.official.some((row) => row.model === 'deepseek-v4-flash'))
+    const provider = body.pricing.providers[0]
+    assert.deepEqual({ id: provider.id, name: provider.name }, { id: 'openai', name: 'OpenAI' })
+    assert.deepEqual(provider.models[0].usd, { input: 1, cacheRead: 0.1, output: 2 })
+    assert.deepEqual(provider.models[0].cny.input, 7.2)
+    assert.ok(Math.abs(provider.models[0].cny.cacheRead - 0.72) < 1e-9)
+    assert.deepEqual(provider.models[0].cny.output, 14.4)
+    assert.equal(body.usage.days, 7)
+    assert.equal(body.usage.totalCalls, 1)
+    assert.equal(body.usage.totalCost, 7.2)
+    assert.deepEqual(body.usage.models.map((row) => ({
+      provider: row.provider,
+      model: row.model,
+      calls: row.calls,
+      inputTokens: row.inputTokens,
+      cost: row.cost,
+    })), [{ provider: 'openai', model: 'gpt-5', calls: 1, inputTokens: 1_000_000, cost: 7.2 }])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('pricing route requires browser authentication and rejects non-GET methods', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-routes-test-'))
+  try {
+    const rejectedHarness = await startHarness(temp, 401)
+    const rejected = makeResponse()
+    await rejectedHarness.routes.get('/api/whale-pet/pricing').handler(request('GET'), rejected)
+    assert.equal(rejected.result().status, 401)
+
+    const harness = await startHarness(temp, undefined)
+    const wrongMethod = makeResponse()
+    await harness.routes.get('/api/whale-pet/pricing').handler(request('POST'), wrongMethod)
+    assert.equal(wrongMethod.result().status, 405)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})

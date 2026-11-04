@@ -23,6 +23,7 @@ The host injects `credentials`, `webServer`, and `connection`. Health and immuta
 - `GET /api/whale-pet/state`: balance plus spend snapshot.
 - `POST /api/whale-pet/tasks`: progress for requested session IDs.
 - `POST /api/whale-pet/task-summary`: token/cost summary priced per model.
+- `GET /api/whale-pet/pricing`: the current weekly price table (official DeepSeek plus models.dev) and 7-day per-model usage priced by the same snapshot.
 - `GET /api/whale-pet/opencode-go`: OpenCode Go quota (5-hour / 7-day / monthly windows).
 - `GET /dsh-whale-pet-live2dcubismcore.min.js`: local Cubism Core runtime.
 - `GET /api/whale-pet/companions` plus issue/revoke POST routes: browser-authenticated grant management.
@@ -33,6 +34,8 @@ The host injects `credentials`, `webServer`, and `connection`. Health and immuta
 Request JSON is limited to 64 KiB. Task IDs are deduplicated, capped at 32, and individually bounded; corrupt session rows are isolated. `SessionProjection` shares a one-second, bounded session-tree index across browser and companion task routes, while progress and summary caches each have hard entry budgets.
 
 Balance uses DSH credentials and DeepSeek `/user/balance`. The first successful observation establishes a baseline; later decreases accumulate under `$DSH_HOME/whale-pet/balance-spend.json` for the current Beijing calendar day. Session logs provide call counts and task activity only.
+
+Pricing has two layers: curated official DeepSeek policies with peak/off-peak windows, and a compact last-known-good models.dev catalog in `$DSH_HOME/whale-pet/models-dev.json` for every other provider. The host checks catalog staleness hourly and refreshes every 7 days; a failed refresh keeps the last valid snapshot. The price table and usage statistics are projected from one immutable snapshot so displayed prices and computed costs cannot diverge. Usage aggregation reads the highest session-log version present (`session.v4.jsonl[.zstd]` and later) and, for windowed statistics only, skips files whose last write predates the window to avoid re-pricing hundreds of megabytes of history.
 
 ## Client Live2D flow
 

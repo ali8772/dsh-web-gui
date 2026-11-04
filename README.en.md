@@ -56,6 +56,13 @@
 - `approval/asked` turns the status dot yellow; `approval/decided` clears it immediately.
 - The completion dialog splits the latest conversation and full-session totals, pricing each message with its actual model and time.
 - Non-DeepSeek prices come from a compact local catalog refreshed from [models.dev](https://models.dev/api.json) every 7 days. The host keeps the last valid snapshot and never blocks the state route on a failed refresh; external USD-per-1M-token prices use a fixed display conversion to CNY, while unknown models remain unpriced at ¥0.00.
+- The catalog refreshes automatically every 7 days (checked hourly), so a long-running host never needs a restart. Session logs are discovered per version (`session.v4.jsonl(.zstd)` and newer), so recent usage is included after a persistence upgrade.
+
+### API price table and priced statistics
+
+- The balance page has a new **Price table** entry: it lists DeepSeek's current official prices (peak/off-peak/flat) plus 200+ providers and 8000+ models from models.dev, searchable by provider or model and shown per 1M tokens.
+- The same dialog shows the last 7 days of usage aggregated by the actual model — calls, tokens and cost — DeepSeek messages use their historical official peak/off-peak price, while other models use the current weekly catalog, matching the completion dialog.
+- The update timestamp, catalog revision time and next refresh are shown; a failed refresh keeps the last valid snapshot and is labelled as stale.
 
 ### Whale-chan and refresh
 
@@ -86,6 +93,7 @@ Restart `dsh web`, then refresh the browser. Do not add a second insertion to th
 | `GET /api/whale-pet/state` | Balance plus today/seven-day spend and call counts; DSH browser-authenticated |
 | `POST /api/whale-pet/tasks` | Live task progress and awaiting-user state; up to 32 unique session IDs |
 | `POST /api/whale-pet/task-summary` | Per-session token and cost summary, priced per model |
+| `GET /api/whale-pet/pricing` | Weekly price table plus 7-day per-model usage priced by it |
 | `GET /api/whale-pet/opencode-go` | OpenCode Go plan quota |
 | `GET/POST /api/whale-pet/companions*` | Browser-authenticated grant list, issue, and revoke operations |
 | `/dsh-whale-pet/companion/v1/*` | Loopback + Bearer state/tasks/task-summary/opencode-go companion routes |
