@@ -6,7 +6,7 @@
  * - 数据异常时鲸鱼变「沮丧」并显示错误气泡
  */
 
-import { createElement as h, useEffect, useRef, useState } from 'react'
+import { createElement as h, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import whaleChanUrl from '../../assets/whale-chan.png'
 import {
@@ -215,6 +215,69 @@ export interface SessionSummary {
   totalCost: number
   totalCostUsd: number
   totalModels: ModelUsageSummary[]
+}
+
+// ---- API 价目表与近 7 天用量（宿主 /api/whale-pet/pricing） ----
+export interface PriceUnit {
+  readonly input: number
+  readonly cacheRead: number
+  readonly output: number
+}
+
+export interface PriceTableModel {
+  readonly id: string
+  readonly usd: PriceUnit
+  readonly cny: PriceUnit
+}
+
+export interface PriceTableProvider {
+  readonly id: string
+  readonly name?: string
+  readonly models: readonly PriceTableModel[]
+}
+
+export interface PriceTableOfficialRow {
+  readonly model: string
+  readonly usd: PriceUnit
+  readonly cny: PriceUnit
+  readonly mode: 'flat' | 'peak' | 'offPeak'
+}
+
+export interface PriceTable {
+  readonly revision: string
+  readonly source: 'builtin' | 'models.dev' | 'mixed'
+  readonly fetchedAt: number | null
+  readonly nextRefreshAt: number | null
+  readonly usdToCny: number
+  readonly official: readonly PriceTableOfficialRow[]
+  readonly providers: readonly PriceTableProvider[]
+  readonly modelCount: number
+}
+
+export interface PricingUsageRow {
+  readonly provider: string
+  readonly model: string
+  readonly calls: number
+  readonly inputTokens: number
+  readonly cacheReadTokens: number
+  readonly outputTokens: number
+  readonly cost: number
+  readonly costUsd: number
+}
+
+export interface PricingResponse {
+  readonly ok: true
+  readonly fetchedAt: number
+  readonly pricing: PriceTable
+  readonly usage: {
+    readonly days: number
+    readonly startDay: string
+    readonly endDay: string
+    readonly models: readonly PricingUsageRow[]
+    readonly totalCost: number
+    readonly totalCostUsd: number
+    readonly totalCalls: number
+  }
 }
 
 // ---- 当前任务状态源（由插件入口注入 ctx.sessions.list） ----
@@ -591,6 +654,65 @@ function formatGoTime(ms: number): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+function formatDateTime(ms: number): string {
+  const d = new Date(ms)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 单价按每 1M tokens 展示；极小价格保留到小数点后 4 位。 */
+const UNIT_PRICE_FORMAT = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3 })
+function formatUnitPrice(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0'
+  if (value < 0.0001) return '<0.0001'
+  if (value < 0.01) return value.toFixed(4)
+  return UNIT_PRICE_FORMAT.format(value)
+}
+
+/** 价目表最多渲染的行数；搜索会先过滤再截断，避免一次挂载数千行。 */
+const PRICING_ROW_LIMIT = 120
+
+interface PriceRow {
+  readonly key: string
+  readonly provider: string
+  readonly providerName: string
+  readonly model: string
+  readonly cny: PriceUnit
+  readonly official: boolean
+  readonly mode: 'flat' | 'peak' | 'offPeak' | null
+  readonly search: string
+}
+
+/** 官方价排在最前，其后按供应商/模型 id 排序；用于搜索与展示。 */
+function buildPriceRows(table: PriceTable): PriceRow[] {
+  const rows: PriceRow[] = table.official.map((row) => ({
+    key: `deepseek/${row.model}`,
+    provider: 'deepseek',
+    providerName: 'DeepSeek',
+    model: row.model,
+    cny: row.cny,
+    official: true,
+    mode: row.mode,
+    search: `deepseek ${row.model} 官方`.toLowerCase(),
+  }))
+  for (const provider of table.providers) {
+    const providerName = provider.name ?? provider.id
+    for (const model of provider.models) {
+      rows.push({
+        key: `${provider.id}/${model.id}`,
+        provider: provider.id,
+        providerName,
+        model: model.id,
+        cny: model.cny,
+        official: false,
+        mode: null,
+        search: `${provider.id} ${providerName} ${model.id}`.toLowerCase(),
+      })
+    }
+  }
+  return rows
+}
+
 
 interface BubbleContent {
   title: string
@@ -708,6 +830,15 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   const [goUsage, setGoUsage] = useState<OpenCodeGoUsage | null>(null)
   const [goError, setGoError] = useState<string | null>(null)
   const [goFetching, setGoFetching] = useState(false)
+  const [pricingOpen, setPricingOpen] = useState(false)
+  const pricingOpenRef = useRef(false)
+  pricingOpenRef.current = pricingOpen
+  const [pricingData, setPricingData] = useState<PricingResponse | null>(null)
+  const [pricingLoading, setPricingLoading] = useState(false)
+  const [pricingError, setPricingError] = useState<string | null>(null)
+  const [pricingQuery, setPricingQuery] = useState('')
+  const pricingRequestRef = useRef<AbortController | null>(null)
+  const pricingDialogRef = useRef<HTMLDivElement | null>(null)
   const [petScale, setPetScale] = useState(() => loadPetScale())
   const petScaleRef = useRef(petScale)
   petScaleRef.current = petScale
@@ -720,6 +851,50 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     } catch {
       // 忽略存储失败
     }
+  }
+
+  // ---- API 价目表（每周更新）与按价目表统计的用量 ----
+  const loadPricing = async (): Promise<void> => {
+    pricingRequestRef.current?.abort()
+    const controller = new AbortController()
+    pricingRequestRef.current = controller
+    setPricingLoading(true)
+    setPricingError(null)
+    try {
+      const response = await fetch(WHALE_PET_PATHS.pricing, {
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const body = (await response.json()) as PricingResponse
+      if (body === null || typeof body !== 'object' || body.ok !== true
+        || body.pricing === undefined || body.usage === undefined) throw new Error('bad payload')
+      if (controller.signal.aborted || pricingRequestRef.current !== controller) return
+      setPricingData(body)
+    } catch (cause) {
+      if (!controller.signal.aborted && pricingRequestRef.current === controller) {
+        setPricingError(cause instanceof Error ? cause.message : String(cause))
+      }
+    } finally {
+      if (pricingRequestRef.current === controller) {
+        pricingRequestRef.current = null
+        setPricingLoading(false)
+      }
+    }
+  }
+
+  const openPricing = (): void => {
+    setPricingOpen(true)
+    setPricingQuery('')
+    void loadPricing()
+  }
+
+  const closePricing = (): void => {
+    pricingRequestRef.current?.abort()
+    pricingRequestRef.current = null
+    setPricingLoading(false)
+    setPricingOpen(false)
   }
 
   // ---- Live2D（可选移植模型） ----
@@ -1073,6 +1248,52 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     }
   }, [summaryDialog, live2dOpen])
 
+  useEffect(() => {
+    if (!pricingOpen) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    queueMicrotask(() => pricingDialogRef.current?.focus())
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closePricing()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const dialog = pricingDialogRef.current
+      if (dialog === null) return
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )]
+      const first = focusable[0]
+      const last = focusable.at(-1)
+      if (first === undefined || last === undefined) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const active = document.activeElement
+      const outside = !(active instanceof Node) || !dialog.contains(active)
+      if (event.shiftKey && (outside || active === dialog || active === first)) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (outside || active === last)) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previous?.focus()
+    }
+    // closePricing only touches refs and stable setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pricingOpen])
+
+  useEffect(() => () => {
+    pricingRequestRef.current?.abort()
+  }, [])
+
   // 挂载时读取配置：已导入模型则自动恢复。
   useEffect(() => {
     const operation = ++live2dOperationRef.current
@@ -1211,9 +1432,9 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
     }
   }, [])
 
-  // 设置对话框打开时延迟完成汇总，避免两个模态框争抢焦点与 Escape。
+  // 任一模态框打开时延迟完成汇总，避免两个模态框争抢焦点与 Escape。
   useEffect(() => subscribeSummary((summary) => {
-    if (summary !== null && live2dOpenRef.current) {
+    if (summary !== null && (live2dOpenRef.current || pricingOpenRef.current)) {
       deferredSummaryRef.current = summary
       return
     }
@@ -1221,11 +1442,11 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   }), [])
 
   useEffect(() => {
-    if (live2dOpen || deferredSummaryRef.current === null) return
+    if (live2dOpen || pricingOpen || deferredSummaryRef.current === null) return
     const deferred = deferredSummaryRef.current
     deferredSummaryRef.current = null
     setSummaryDialog(deferred)
-  }, [live2dOpen])
+  }, [live2dOpen, pricingOpen])
 
   // 订阅当前任务状态（running + 会话标题）
   useEffect(() => subscribeTask(setTask), [])
@@ -1380,10 +1601,10 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
 
     const onPointerDown = (event: PointerEvent): void => {
       if (event.button !== 0) return
-      // 充值按钮/进度条/任务行上的按下不进入拖拽（避免点击它们触发模式切换/拖拽）
+      // 充值/价目表按钮、进度条、任务行上的按下不进入拖拽（避免点击它们触发模式切换/拖拽）
       const target = event.target as HTMLElement | null
       if (target !== null && typeof target.closest === 'function'
-        && target.closest('.wp-recharge-btn, .wp-task-prog, .wp-task-row, .wp-live2d-config') !== null) return
+        && target.closest('.wp-recharge-btn, .wp-pricing-btn, .wp-task-prog, .wp-task-row, .wp-live2d-config') !== null) return
       const start = posRef.current
       dragState.current = {
         startX: event.clientX,
@@ -1426,6 +1647,15 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
   // 滚动时复制根任务树；family/children 使用 display:contents，因此轨道仍按每行 40px 平移。
   const trackRoots = scrolling ? rootItems.concat(rootItems) : rootItems
   const bubble = bubbleFor(mode, data, error, task, goUsage, goError, goFetching, goMode)
+  const priceRows = useMemo(
+    () => (pricingData === null ? [] : buildPriceRows(pricingData.pricing)),
+    [pricingData],
+  )
+  const priceQuery = pricingQuery.trim().toLowerCase()
+  const filteredPriceRows = priceQuery === ''
+    ? priceRows
+    : priceRows.filter((row) => row.search.includes(priceQuery))
+  const shownPriceRows = filteredPriceRows.slice(0, PRICING_ROW_LIMIT)
   const stale = data !== null && Date.now() - data.fetchedAt > 90_000
   const dotClass = fetching
     ? 'wp-dot-fetching'
@@ -1484,6 +1714,147 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
       ),
     )
   }
+
+  const renderPricingBody = (): JSX.Element => {
+    if (pricingData === null) {
+      return h('div', { className: 'wp-pricing-status', role: 'status', 'aria-live': 'polite' },
+        pricingLoading ? '正在获取价目表…' : `价目表获取失败：${pricingError ?? '未知错误'}`,
+        !pricingLoading && h('button', {
+          className: 'wp-pricing-retry',
+          type: 'button',
+          onClick: () => void loadPricing(),
+        }, '重试'),
+      )
+    }
+    const { pricing, usage } = pricingData
+    const officialPeak = pricing.official.some((row) => row.mode === 'peak')
+    const officialOffPeak = pricing.official.some((row) => row.mode === 'offPeak')
+    const officialModeText = officialPeak ? '当前官方高峰价' : officialOffPeak ? '当前官方低谷价' : '官方固定价'
+    return h('div', { className: 'wp-pricing-content' },
+      h('div', {
+        className: 'wp-pricing-status',
+        role: 'status',
+        'aria-live': 'polite',
+        'data-pricing-source': pricing.source,
+      },
+        pricing.source === 'builtin'
+          ? '仅内置 DeepSeek 官方价；外部价目表尚未获取'
+          : `DeepSeek ${officialModeText} + models.dev 周更价目表 · ${pricing.modelCount} 个模型`,
+      ),
+      h('div', { className: 'wp-pricing-substatus' },
+        pricing.fetchedAt === null
+          ? '每周自动更新 · 尚未获取外部价目表'
+          : `每周自动更新 · 更新于 ${formatDateTime(pricing.fetchedAt)}`,
+        pricing.nextRefreshAt !== null ? ` · 下次 ${formatDateTime(pricing.nextRefreshAt)}` : '',
+      ),
+      pricingError !== null && h('div', { className: 'wp-pricing-error' }, `刷新失败，显示上次数据：${pricingError}`),
+      h('div', { className: 'wp-pricing-section' }, `近 ${usage.days} 天用量（按价目表估算 · ${usage.startDay} ~ ${usage.endDay}）`),
+      usage.models.length === 0
+        ? h('div', { className: 'wp-pricing-empty' }, '该窗口内暂无可用量记录')
+        : h('div', { className: 'wp-pricing-usage' },
+            usage.models.map((row) => {
+              const label = row.provider === '' ? row.model : `${row.provider}/${row.model}`
+              const tokens = row.inputTokens + row.cacheReadTokens + row.outputTokens
+              return h('div', {
+                key: label,
+                className: 'wp-pricing-usage-row',
+                'data-usage-model': label,
+              },
+                h('div', { className: 'wp-pricing-usage-main' },
+                  h('span', { className: 'wp-pricing-usage-name', title: label }, label),
+                  h('span', { className: 'wp-pricing-usage-cost' }, `¥${row.cost.toFixed(2)}`),
+                ),
+                h('div', { className: 'wp-pricing-usage-meta' },
+                  `${row.calls} 次 · ${formatTokens(tokens)} tokens`,
+                  row.costUsd > 0 ? ` · $${row.costUsd.toFixed(4)}` : '',
+                ),
+              )
+            }),
+            h('div', { className: 'wp-pricing-usage-total' },
+              h('span', null, `共 ${usage.totalCalls} 次调用`),
+              h('span', null, `估算 ¥${usage.totalCost.toFixed(2)}`),
+            ),
+          ),
+      h('div', { className: 'wp-pricing-section' }, '价目表（每 100 万 tokens · 人民币估算）'),
+      h('input', {
+        className: 'wp-pricing-search',
+        type: 'search',
+        value: pricingQuery,
+        placeholder: '搜索供应商或模型，例如 openai、gpt-5',
+        'aria-label': '搜索价目表',
+        onChange: (event: React.ChangeEvent<HTMLInputElement>) => setPricingQuery(event.target.value),
+      }),
+      h('div', { className: 'wp-pricing-table', role: 'table', 'aria-label': 'API 价目表' },
+        h('div', { className: 'wp-pricing-table-head', role: 'row' },
+          h('span', { className: 'wp-pricing-col-model', role: 'columnheader' }, '模型'),
+          h('span', { className: 'wp-pricing-col-price', role: 'columnheader' }, '输入'),
+          h('span', { className: 'wp-pricing-col-price', role: 'columnheader' }, '缓存'),
+          h('span', { className: 'wp-pricing-col-price', role: 'columnheader' }, '输出'),
+        ),
+        h('div', { className: 'wp-pricing-table-body' },
+          shownPriceRows.length === 0
+            ? h('div', { className: 'wp-pricing-empty' }, '没有匹配的供应商或模型')
+            : shownPriceRows.map((row) => h('div', {
+                key: row.key,
+                className: 'wp-pricing-row',
+                role: 'row',
+                title: `${row.provider}/${row.model}`,
+              },
+                h('div', { className: 'wp-pricing-col-model', role: 'cell' },
+                  h('span', { className: 'wp-pricing-model-name' }, row.model),
+                  h('span', { className: 'wp-pricing-model-provider' },
+                    row.official
+                      ? `${row.providerName} · 官方${row.mode === 'peak' ? '高峰' : row.mode === 'offPeak' ? '低谷' : ''}`
+                      : row.providerName,
+                  ),
+                ),
+                h('span', { className: 'wp-pricing-col-price', role: 'cell' }, formatUnitPrice(row.cny.input)),
+                h('span', { className: 'wp-pricing-col-price', role: 'cell' }, formatUnitPrice(row.cny.cacheRead)),
+                h('span', { className: 'wp-pricing-col-price', role: 'cell' }, formatUnitPrice(row.cny.output)),
+              )),
+        ),
+      ),
+      filteredPriceRows.length > shownPriceRows.length && h('div', { className: 'wp-pricing-hint' },
+        `匹配 ${filteredPriceRows.length} 条，仅显示前 ${PRICING_ROW_LIMIT} 条，请继续输入关键词缩小范围`,
+      ),
+      h('div', { className: 'wp-pricing-note' },
+        `外部价格来自 models.dev（USD/1M tokens），按 1 USD ≈ ${pricing.usdToCny} CNY 估算；DeepSeek 按消息发生时的官方峰谷价计价，其他模型按当前价目表版本估算，未收录模型显示 ¥0.00，实际以账单为准。`,
+      ),
+    )
+  }
+
+  const pricingDialog = pricingOpen
+    ? createPortal(
+        h('div', {
+          className: 'wp-pricing-backdrop',
+          onClick: closePricing,
+        },
+          h('div', {
+            ref: pricingDialogRef,
+            className: 'wp-pricing-dialog',
+            role: 'dialog',
+            'aria-modal': true,
+            'aria-busy': pricingLoading,
+            'aria-labelledby': 'wp-pricing-title',
+            tabIndex: -1,
+            onClick: (event: React.MouseEvent<HTMLDivElement>): void => event.stopPropagation(),
+          },
+            h('div', { className: 'wp-pricing-header' },
+              h('span', { className: 'wp-pricing-title', id: 'wp-pricing-title' }, 'API 价目表'),
+              h('button', {
+                className: 'wp-pricing-close',
+                type: 'button',
+                title: '关闭',
+                'aria-label': '关闭价目表',
+                onClick: closePricing,
+              }, '×'),
+            ),
+            h('div', { className: 'wp-pricing-body' }, renderPricingBody()),
+          ),
+        ),
+        document.body,
+      )
+    : null
 
   return h('div', { className: 'wp-root', ref: rootRef },
     h('div',
@@ -1593,15 +1964,28 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
           )
         ),
         mode === 0 && (
-          h('a', {
-            className: 'wp-recharge-btn',
-            href: 'https://platform.deepseek.com/top_up',
-            target: '_blank',
-            rel: 'noopener noreferrer',
-            title: '前往 DeepSeek 平台充值',
-            onPointerDown: (e: React.PointerEvent<HTMLAnchorElement>) => { e.stopPropagation() },
-            onClick: (e: React.MouseEvent<HTMLAnchorElement>) => { e.stopPropagation() },
-          }, '充值 +')
+          h('div', { className: 'wp-bubble-actions' },
+            h('button', {
+              className: 'wp-pricing-btn',
+              type: 'button',
+              title: '查看各家 API 价目表与近 7 天按价目表估算的用量',
+              'aria-haspopup': 'dialog',
+              onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => { e.stopPropagation() },
+              onClick: (e: React.MouseEvent<HTMLButtonElement>) => {
+                e.stopPropagation()
+                openPricing()
+              },
+            }, '价目表'),
+            h('a', {
+              className: 'wp-recharge-btn',
+              href: 'https://platform.deepseek.com/top_up',
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              title: '前往 DeepSeek 平台充值',
+              onPointerDown: (e: React.PointerEvent<HTMLAnchorElement>) => { e.stopPropagation() },
+              onClick: (e: React.MouseEvent<HTMLAnchorElement>) => { e.stopPropagation() },
+            }, '充值 +'),
+          )
         ),
       ),
       h('div', { className: 'wp-whale' },
@@ -1631,7 +2015,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
         ),
       ),
     ),
-    summaryDialog !== null && !live2dOpen && createPortal(
+    summaryDialog !== null && !live2dOpen && !pricingOpen && createPortal(
       h('div', {
         className: 'wp-summary-backdrop',
         onClick: dismissSummary,
@@ -1716,7 +2100,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
               h('span', { className: 'wp-summary-label' }, '对话总费用（预估）'),
               h('span', { className: 'wp-summary-value', 'data-summary-field': 'cost' }, `¥${summaryDialog.totalCost.toFixed(2)}`),
             ),
-            h('div', { className: 'wp-summary-note' }, '按 DeepSeek 官方价格估算，实际以账单为准'),
+            h('div', { className: 'wp-summary-note' }, '按价目表估算（DeepSeek 官方价 + models.dev 周更价），实际以账单为准'),
           ),
         ),
       ),
@@ -1908,5 +2292,6 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
       ),
       document.body,
     ),
+    pricingDialog,
   )
 }

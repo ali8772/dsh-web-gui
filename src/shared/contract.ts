@@ -5,6 +5,7 @@ export const WHALE_PET_PATHS = {
   state: '/api/whale-pet/state',
   tasks: '/api/whale-pet/tasks',
   taskSummary: '/api/whale-pet/task-summary',
+  pricing: '/api/whale-pet/pricing',
   openCodeGo: '/api/whale-pet/opencode-go',
   companions: '/api/whale-pet/companions',
   companionIssue: '/api/whale-pet/companions/issue',

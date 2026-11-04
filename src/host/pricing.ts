@@ -18,6 +18,14 @@ export const DEFAULT_TIMEZONE = 'Asia/Shanghai'
 /** 官方高峰时段（本地小时，[start, end) 闭开区间）。 */
 export const DEFAULT_PEAK_WINDOWS: ReadonlyArray<readonly [number, number]> = [[9, 12], [14, 18]]
 
+/**
+ * DSH 官方适配器的模型 id → 官方价目表模型 id。
+ * 适配器会把部分官方模型改名（例如 `deepseek-flash`），价格仍按同系列官方政策。
+ */
+export const OFFICIAL_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  'deepseek-flash': 'deepseek-v4-flash',
+}
+
 export const ZERO_PRICE: DualCurrencyUnit = Object.freeze({
   cny: Object.freeze({ input: 0, cacheRead: 0, output: 0 }),
   usd: Object.freeze({ input: 0, cacheRead: 0, output: 0 }),
@@ -51,6 +59,8 @@ export interface ExternalPriceCatalog {
   readonly usdToCny?: number
   readonly sha256?: string
   readonly providers: Readonly<Record<string, {
+    /** models.dev 的供应商展示名；旧缓存可能没有。 */
+    readonly name?: string
     readonly models: Readonly<Record<string, ExternalPriceRecord>>
   }>>
 }
@@ -259,6 +269,7 @@ export function priceAt(
     return { cny: ZERO_UNIT, usd: ZERO_UNIT, mode: 'flat', source: 'none' }
   }
   const peak = isPeak(timeMs, timezone, peakWindows)
+  const pricedModel = OFFICIAL_MODEL_ALIASES[model] ?? model
   const applicable = policies.filter((policy) => timeMs >= Date.parse(policy.since))
   const scope = applicable.length > 0 ? applicable : [policies[0]!]
   let winner: PricePolicy | undefined
@@ -269,7 +280,7 @@ export function priceAt(
     const table = policy.peak !== undefined && policy.offPeak !== undefined
       ? (peak ? policy.peak : policy.offPeak)
       : policy.prices
-    if (table !== undefined && table[model] !== undefined) {
+    if (table !== undefined && table[pricedModel] !== undefined) {
       winner = policy
       named = true
       baseTable = table
@@ -286,7 +297,7 @@ export function priceAt(
   // 未被任何政策明确点名的模型保持未计价，避免把 GPT、Claude 或 `unknown`
   // 伪装成 DeepSeek 调用费用。
   const unit = named && baseTable !== undefined
-    ? priceFor(model, baseTable)
+    ? priceFor(pricedModel, baseTable)
     : { cny: ZERO_UNIT, usd: ZERO_UNIT }
   return {
     cny: unit.cny,
@@ -294,6 +305,50 @@ export function priceAt(
     mode: winner.peak !== undefined && winner.offPeak !== undefined ? (peak ? 'peak' : 'offPeak') : 'flat',
     source: named ? 'official' : 'none',
   }
+}
+
+/** 当前生效的 DeepSeek 官方模型价格行（用于「价目表」页面）。 */
+export interface OfficialPriceRow {
+  readonly model: string
+  readonly cny: PriceUnit
+  readonly usd: PriceUnit
+  /** 当前时刻适用的价格模式。 */
+  readonly mode: 'flat' | 'peak' | 'offPeak'
+}
+
+/**
+ * 列出官方政策点名过的全部 DeepSeek 模型，并取该模型在当前时刻生效的价格。
+ * 新政策下架的旧模型继续沿用最后一次点名它的政策价，与历史账单一致。
+ */
+export function officialPriceRows(
+  timeMs: number,
+  opts?: {
+    timezone?: string
+    peakWindows?: ReadonlyArray<readonly [number, number]>
+    policies?: readonly PricePolicy[]
+  },
+): OfficialPriceRow[] {
+  const timezone = opts?.timezone ?? DEFAULT_TIMEZONE
+  const peakWindows = opts?.peakWindows ?? DEFAULT_PEAK_WINDOWS
+  const policies = opts?.policies ?? OFFICIAL_PRICING_POLICIES
+  const models: string[] = []
+  const seen = new Set<string>()
+  // 从最新政策向前收集，保证当前在售模型排在旧模型前面。
+  for (let index = policies.length - 1; index >= 0; index--) {
+    const policy = policies[index]!
+    for (const table of [policy.prices, policy.peak, policy.offPeak]) {
+      if (table === undefined) continue
+      for (const model of Object.keys(table)) {
+        if (model === '*' || seen.has(model)) continue
+        seen.add(model)
+        models.push(model)
+      }
+    }
+  }
+  return models.map((model) => {
+    const price = priceAt(model, timeMs, { timezone, peakWindows, policies })
+    return { model, cny: price.cny, usd: price.usd, mode: price.mode }
+  })
 }
 
 /** 一次性计算一批消息的费用：按 provider/model/hour 与目录版本记忆化。 */

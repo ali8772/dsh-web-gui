@@ -105,7 +105,7 @@ test('readLogContent rejects structural Zstandard corruption instead of treating
   }
 })
 
-test('listSessionLogs discovers versioned v3 session artifacts and prefers them over legacy duplicates', async () => {
+test('listSessionLogs discovers versioned session artifacts and prefers the highest version', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-session-artifacts-'))
   try {
     const { listSessionLogs } = await loadSessionsModule(temp)
@@ -113,8 +113,9 @@ test('listSessionLogs discovers versioned v3 session artifacts and prefers them 
     await mkdir(workspace, { recursive: true })
     await writeFile(join(workspace, 'session.jsonl.zstd'), checkedFrame(line('session', { version: 2 })))
     await writeFile(join(workspace, 'session.v3.jsonl.zstd'), checkedFrame(line('session', { version: 3 })))
+    await writeFile(join(workspace, 'session.v4.jsonl.zstd'), checkedFrame(line('session', { version: 4 })))
     const logs = listSessionLogs(temp)
-    assert.deepEqual(logs.map(({ id, path }) => ({ id, name: basename(path) })), [{ id: 'same-id', name: 'session.v3.jsonl.zstd' }])
+    assert.deepEqual(logs.map(({ id, path }) => ({ id, name: basename(path) })), [{ id: 'same-id', name: 'session.v4.jsonl.zstd' }])
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

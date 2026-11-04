@@ -66,6 +66,7 @@ const {
   state: STATE_PATH,
   tasks: TASKS_PATH,
   taskSummary: TASK_SUMMARY_PATH,
+  pricing: PRICING_PATH,
   openCodeGo: OPENCODE_GO_PATH,
 } = WHALE_PET_PATHS
 
@@ -77,6 +78,8 @@ const BALANCE_PATH = '/user/balance'
 
 const BALANCE_CACHE_MS = 55_000
 const FETCH_TIMEOUT_MS = 15_000
+/** 每小时检查一次外部价目表是否已超过 7 天，保证长驻进程也会周更。 */
+const PRICING_CHECK_MS = 60 * 60_000
 /** 「近 7 天」= 今日 + 前 6 个日历日（北京时间）。 */
 const SPEND_WINDOW_DAYS = 7
 
@@ -292,8 +295,10 @@ function computeSpend(ctx: Context, balance: BalanceSnapshot | null, pricing: Pr
       : { currency: balance.currency, totalBalance: balance.totalBalance },
     nowMs,
   )
-  const aggregates = aggregateSessionSpend(home, { pricing: pricing.snapshot() })
+  // 只回放近 7 天有写入的日志：调用次数统计不需要数百 MB 的历史账本，
+  // 窗口外的文件按 mtime 直接跳过。
   const window = spendWindowDays(nowMs, SPEND_WINDOW_DAYS)
+  const aggregates = aggregateSessionSpend(home, { pricing: pricing.snapshot(), window })
   const todayCalls = sumWindow(aggregates.byDay, window.endDay, window.endDay).calls
   const days7Calls = sumWindow(aggregates.byDay, window.startDay, window.endDay).calls
   return {
@@ -310,6 +315,13 @@ export function apply(ctx: Context): void {
   const sessions = createSessionProjection()
   const pricing = createPricingManager({ home: resolveDshHome(ctx) })
   void pricing.refresh().catch(() => {})
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      void pricing.refresh().catch(() => {})
+    }, PRICING_CHECK_MS)
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }, 'dsh-whale-pet: weekly pricing refresh')
 
   ctx.effect(
     () => ctx.webServer.register({
@@ -346,6 +358,55 @@ export function apply(ctx: Context): void {
       },
     }),
     'dsh-whale-pet: state route',
+  )
+
+  // 价目表与近 7 天按模型用量：两者使用同一个定价快照，保证「统计按价目表计价」。
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: PRICING_PATH,
+      handler: (req, res) => {
+        if (rejectPrivateRequest(ctx, req, res)) return
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { ok: false, error: 'bad-request', message: 'method not allowed' })
+          return
+        }
+        try {
+          const now = Date.now()
+          const snapshot = pricing.snapshot()
+          const window = spendWindowDays(now, SPEND_WINDOW_DAYS)
+          const aggregates = aggregateSessionSpend(resolveDshHome(ctx), { pricing: snapshot, window })
+          const models = aggregates.models
+          let totalCost = 0
+          let totalCostUsd = 0
+          let totalCalls = 0
+          for (const row of models) {
+            totalCost += row.cost
+            totalCostUsd += row.costUsd
+            totalCalls += row.calls
+          }
+          sendJson(res, 200, {
+            ok: true,
+            fetchedAt: now,
+            pricing: pricing.table(now),
+            usage: {
+              days: SPEND_WINDOW_DAYS,
+              startDay: window.startDay,
+              endDay: window.endDay,
+              models,
+              totalCost: Math.round(totalCost * 100) / 100,
+              totalCostUsd: Math.round(totalCostUsd * 10000) / 10000,
+              totalCalls,
+            },
+          })
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-whale-pet: pricing route failed')
+          ctx.logger?.warn?.(error)
+          sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
+        }
+      },
+    }),
+    'dsh-whale-pet: pricing route',
   )
 
   // 真实任务进度：POST { ids: string[] } → 每会话 { totalTodos, doneTodos, pct, stage, tool, turn, step }

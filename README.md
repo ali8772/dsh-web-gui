@@ -55,7 +55,15 @@
 - 自动发现最多 10 个运行中会话；子代理任务行嵌套在主任务容器下，超过 5 条时滚动。
 - `approval/asked` 让状态点变黄；`approval/decided` 立即清除黄点。
 - 完成对话框分别展示本次对话与对话总消耗量，每条消息按其实际模型和发生时价格估算。
-- 非 DeepSeek 模型价格来自 [models.dev](https://models.dev/api.json) 的精简本地目录；宿主每 7 天后台刷新一次，保留最后一次有效缓存，网络失败不会阻断状态路由。外部价格按 USD/1M tokens 记录，并用固定汇率换算为展示用人民币估算；未知模型仍显示为未计价的 ¥0.00。
+- 非 DeepSeek 模型价格来自 [models.dev](https://models.dev/api.json) 的精简本地目录；宿主每 7 天自动刷新一次（每小时检查，长驻进程无需重启），保留最后一次有效缓存，网络失败不会阻断状态路由。外部价格按 USD/1M tokens 记录，并用固定汇率换算为展示用人民币估算；未知模型仍显示为未计价的 ¥0.00。
+
+### API 价目表与按价目表统计
+
+- 余额页新增「价目表」入口：展示 DeepSeek 官方当前生效价（高峰/低谷/固定）与 models.dev 的 200+ 家供应商、8000+ 个模型价格，可按供应商或模型搜索；价格统一按每 100 万 tokens 展示。
+- 同一对话框展示近 7 天按实际模型聚合的调用次数、tokens 与费用；DeepSeek 按消息发生时的官方峰谷价计价，其他模型按当前周更价目表估算，与任务完成弹窗口径一致。
+- 外部价目表每 7 天自动更新，更新状态、版本时间与下次更新时间都在页面上标明；网络失败时保留最后一次有效缓存并标注刷新失败。
+
+![API 价目表与近 7 天按模型统计](docs/images/api-price-table.png)
 
 ### 鲸鱼娘与刷新
 
@@ -86,6 +94,7 @@ dsh plugin --profile web add ./dsh-whale-pet-<version>.tgz
 | `GET /api/whale-pet/state` | 余额 + 今日/近 7 天消费 + 调用次数；DSH 浏览器认证 |
 | `POST /api/whale-pet/tasks` | 真实任务进度与等待授权状态；最多 32 个唯一会话 ID |
 | `POST /api/whale-pet/task-summary` | 单会话 token/费用汇总，按模型分别计费 |
+| `GET /api/whale-pet/pricing` | 周更价目表 + 近 7 天按模型用量（按价目表计价） |
 | `GET /api/whale-pet/opencode-go` | OpenCode Go 套餐额度 |
 | `GET/POST /api/whale-pet/companions*` | 已认证浏览器列出、签发和撤销桌面伴侣 grant |
 | `/dsh-whale-pet/companion/v1/*` | loopback + Bearer 的 state/tasks/task-summary/opencode-go 伴侣路由 |

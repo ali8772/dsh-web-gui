@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 
 const allowed = new Map([
   ['GHSA-8mmm-9v2q-x3f9', 'pixi-live2d-display@0.4.0 incorrectly declares build-only gh-pages@4 as a runtime dependency; it is never imported or bundled.'],
+  ['GHSA-g3hv-75wg-m249', 'minimatch@3 is pulled only by the unused gh-pages@4 publishing tree (gh-pages -> globby -> glob -> minimatch); the renderer never imports it and the only fix downgrades pixi-live2d-display.'],
 ])
 const result = spawnSync(
   'npm',

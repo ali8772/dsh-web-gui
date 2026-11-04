@@ -32,6 +32,20 @@ export interface DaySpend {
   readonly outputTokens: number
 }
 
+/** 按实际 provider/model 聚合的窗口用量。 */
+export interface ModelSpend {
+  readonly provider: string
+  readonly model: string
+  readonly calls: number
+  readonly inputTokens: number
+  readonly cacheReadTokens: number
+  readonly outputTokens: number
+  /** 按价目表估算的人民币费用。 */
+  readonly cost: number
+  /** 按价目表估算的美元费用。 */
+  readonly costUsd: number
+}
+
 export interface SessionAggregates {
   /** 扫描到的会话日志文件数。 */
   readonly sessionsScanned: number
@@ -41,6 +55,8 @@ export interface SessionAggregates {
   readonly calls: number
   /** 北京时间日历日 → 消费汇总。 */
   readonly byDay: Readonly<Record<string, DaySpend>>
+  /** 指定窗口内按模型聚合的用量；未指定窗口时为空。 */
+  readonly models: ReadonlyArray<ModelSpend>
 }
 
 export interface SpendWindow {
@@ -64,6 +80,8 @@ export interface SessionReader {
   listLogs(): SessionLogMeta[]
   revision(meta: SessionLogMeta): string
   readContent(meta: SessionLogMeta): string | undefined
+  /** 日志最后修改时间（epoch ms）；用于窗口统计跳过不可能含新事件的旧日志。 */
+  modifiedAt?(meta: SessionLogMeta): number
 }
 
 /** 运行时 DSH 主目录：服务 > 环境变量 > 默认。 */
@@ -78,11 +96,17 @@ export function dshHome(homeFn?: (sub: string) => string): string {
   return process.env.DSH_HOME ?? join(homedir(), '.dsh')
 }
 
+const SESSION_ARTIFACT = /^session(?:\.v(\d+))?\.jsonl(?:\.zstd)?$/u
+
+/** 会话日志版本号；非会话文件返回 0，旧式 `session.jsonl` 视为版本 1。 */
+function sessionArtifactVersion(filename: string): number {
+  const match = SESSION_ARTIFACT.exec(filename)
+  if (match === null) return 0
+  return match[1] === undefined ? 1 : Number(match[1])
+}
+
 function isSessionArtifact(filename: string): boolean {
-  return filename === 'session.jsonl'
-    || filename === 'session.jsonl.zstd'
-    || filename === 'session.v3.jsonl'
-    || filename === 'session.v3.jsonl.zstd'
+  return sessionArtifactVersion(filename) > 0
 }
 
 /** 递归枚举 `$DSH_HOME/sessions` 下的会话日志文件。 */
@@ -108,11 +132,15 @@ export function listSessionLogs(home: string): SessionLogMeta[] {
   walk(root)
   // 稳定顺序，避免扫描抖动。
   // A workspace can briefly expose both legacy and versioned artifacts while the
-  // persistence layer upgrades. Prefer the newest versioned file for one session.
+  // persistence layer upgrades. Prefer the highest versioned file for one session.
   const preferred = new Map<string, SessionLogMeta>()
+  const preferredVersion = new Map<string, number>()
   for (const meta of out) {
-    const previous = preferred.get(meta.id)
-    if (previous === undefined || meta.path.includes('session.v3.') || !previous.path.includes('session.v3.')) preferred.set(meta.id, meta)
+    const version = sessionArtifactVersion(basename(meta.path))
+    if (version > (preferredVersion.get(meta.id) ?? 0)) {
+      preferred.set(meta.id, meta)
+      preferredVersion.set(meta.id, version)
+    }
   }
   out.length = 0
   out.push(...preferred.values())
@@ -127,6 +155,15 @@ export function fileRevision(meta: SessionLogMeta): string {
     return `${st.mtimeMs}\u0000${st.size}`
   } catch {
     return ''
+  }
+}
+
+/** 日志最后修改时间（epoch ms）；读取失败时返回 0（随后会因空 revision 被跳过）。 */
+export function fileModifiedAt(meta: SessionLogMeta): number {
+  try {
+    return statSync(meta.path).mtimeMs
+  } catch {
+    return 0
   }
 }
 
@@ -365,6 +402,8 @@ export interface AggregateOptions {
   pricing?: PricingSnapshot
   /** Provider-aware lookup for non-DeepSeek routes. */
   price?: (model: string, timeMs: number, provider?: string) => PriceAtResult
+  /** 只统计该日历日窗口（含端点）内的模型用量；不影响 byDay 全量聚合。 */
+  window?: { readonly startDay: string; readonly endDay: string }
 }
 
 /**
@@ -376,17 +415,24 @@ export function aggregateSessionSpend(home: string, options: AggregateOptions = 
     listLogs: () => listSessionLogs(home),
     revision: fileRevision,
     readContent: readLogContent,
+    modifiedAt: fileModifiedAt,
   }
   const pricing = options.pricing
   const price = options.price
     ?? (pricing !== undefined ? pricing.lookup : createPriceCache())
   const byDay = new Map<string, MutableDaySpend>()
+  const byModel = new Map<string, { provider: string; model: string; calls: number; inputTokens: number; cacheReadTokens: number; outputTokens: number; cost: number; costUsd: number }>()
+  const window = options.window
+  const windowStartMs = window === undefined ? 0 : (Date.parse(`${window.startDay}T00:00:00+08:00`) || 0)
   const maxEvents = options.maxEvents ?? 200_000
   let sessionsWithUsage = 0
   let calls = 0
   let events = 0
   const logs = reader.listLogs()
   for (const meta of logs) {
+    // 窗口统计只关心最近有写入的日志；跳过窗口开始前就不再变化的文件，
+    // 避免为数百 MB 的历史日志反复解压计价（文件最后写入必不晚于其事件时间）。
+    if (windowStartMs > 0 && reader.modifiedAt !== undefined && reader.modifiedAt(meta) < windowStartMs) continue
     const rev = reader.revision(meta)
     if (rev === '') continue
     const cacheKey = `${meta.path}\u0000${meta.id}\u0000${options.pricing?.revision ?? 'builtin'}`
@@ -422,6 +468,28 @@ export function aggregateSessionSpend(home: string, options: AggregateOptions = 
       bucket.inputTokens += item.inputTokens
       bucket.cacheReadTokens += item.cacheReadTokens
       bucket.outputTokens += item.outputTokens
+      if (window !== undefined && (day < window.startDay || day > window.endDay)) continue
+      const modelKey = `${item.provider}\u0000${item.model}`
+      let modelRow = byModel.get(modelKey)
+      if (modelRow === undefined) {
+        modelRow = {
+          provider: item.provider,
+          model: item.model,
+          calls: 0,
+          inputTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+          costUsd: 0,
+        }
+        byModel.set(modelKey, modelRow)
+      }
+      modelRow.calls += 1
+      modelRow.inputTokens += item.inputTokens
+      modelRow.cacheReadTokens += item.cacheReadTokens
+      modelRow.outputTokens += item.outputTokens
+      modelRow.cost += item.cost
+      modelRow.costUsd += item.costUsd
     }
   }
   const sortedDays = [...byDay.keys()].sort()
@@ -437,11 +505,18 @@ export function aggregateSessionSpend(home: string, options: AggregateOptions = 
       outputTokens: b.outputTokens,
     }
   }
-  return { sessionsScanned: logs.length, sessionsWithUsage, calls, byDay: byDayRecord }
+  const models: ModelSpend[] = [...byModel.values()]
+    .map((row) => ({ ...row, cost: round2(row.cost), costUsd: round4(row.costUsd) }))
+    .sort((a, b) => b.cost - a.cost || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model))
+  return { sessionsScanned: logs.length, sessionsWithUsage, calls, byDay: byDayRecord, models }
 }
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000
 }
 
 /** 从日历日汇总里取一个窗口的合计。 */

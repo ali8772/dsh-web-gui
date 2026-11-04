@@ -8,6 +8,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ### Fixed
 - Price non-DeepSeek provider/model routes from a validated weekly `models.dev` snapshot instead of forcing every external model to zero; preserve exact provider separation and DeepSeek's curated historical policies.
+- Price the DSH adapter's `deepseek-flash` model id with the curated official Flash policy instead of reporting zero cost.
+- Discover the newest versioned session-log artifacts (`session.v4.jsonl[.zstd]` and later) so task progress and usage statistics include current sessions after a persistence upgrade.
 - Require Node.js 24 consistently because the host session reader uses Node's Zstandard API.
 - Recover newline-complete task and usage events from a torn final Zstandard session-log frame.
 - Track all running sessions separately from the ten-row display window, preventing reordering and parent grouping from producing false completion dialogs.
@@ -15,6 +17,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ### Added
 - Add an atomic, size-bounded, last-known-good local price catalog under `$DSH_HOME/whale-pet/models-dev.json`, with stale-while-revalidate refresh, retry backoff, cache-read fallback, provenance, and deterministic USD-to-CNY estimate conversion.
+- Add an authenticated `GET /api/whale-pet/pricing` route and a searchable API price-table dialog: DeepSeek's current official peak/off-peak/flat prices plus every priced models.dev provider/model, with 7-day per-model calls, tokens, and cost computed from the same pricing snapshot.
+- Show the catalog update time, revision time, next weekly refresh, and failure state in the price table.
 - Keep a five-model Live2D MRU library in IndexedDB with accessible one-click switching, current-model state, default-character fallback that preserves history, per-model permanent deletion, and cancellation of superseded imports.
 - Protect every private browser route with DSH Host/Origin and authenticated-session checks, bounded JSON bodies, stable errors, deduplicated task IDs, and corrupt-session row isolation.
 - Add independently revocable desktop-companion grants with one-time plaintext `wpg1` tokens, verifier-only credential storage, loopback/Host/Origin fencing, and Bearer-only companion routes.
@@ -25,6 +29,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Add per-artifact bundle budgets and canonical production-audit gates to local packaging, CI, and releases.
 
 ### Changed
+- Refresh the models.dev catalog automatically every 7 days while the host keeps running (hourly staleness check), instead of only on process start.
+- Replay call counts from session logs modified within the 7-day window only, so a cold state request no longer scans the entire history.
 - Add strict TypeScript checking to local packaging, CI, and release validation.
 - Replace the localStorage model pointer with an atomic IndexedDB manifest plus per-model records, preserving config/resource consistency while supporting the bounded recent-model library.
 - Pause the PIXI ticker and idle motion loop while the page is hidden.
