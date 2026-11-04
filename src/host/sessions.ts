@@ -277,14 +277,23 @@ export function readLogContent(meta: SessionLogMeta): string | undefined {
   return buffer.toString('utf8')
 }
 
+/**
+ * 复用的北京时间日格式化器。
+ *
+ * 构造 `Intl.DateTimeFormat` 的成本不低，而聚合循环会对每个已缓存事件求一次
+ * 日历日；逐次构造会把数秒同步 CPU 压在 Node 事件循环上，拖慢同进程的其它
+ * 请求。该格式化器无状态，可安全复用。
+ */
+const SHANGHAI_DAY_FORMAT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: DAY_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
 /** 北京时间日历日 `YYYY-MM-DD`。 */
 export function shanghaiDay(timeMs: number): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: DAY_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(timeMs))
+  const parts = SHANGHAI_DAY_FORMAT.formatToParts(new Date(timeMs))
   const value = (type: string): string => parts.find((part) => part.type === type)?.value ?? '00'
   return `${value('year')}-${value('month')}-${value('day')}`
 }
@@ -441,7 +450,9 @@ export function aggregateSessionSpend(home: string, options: AggregateOptions = 
       const content = reader.readContent(meta)
       if (content === undefined) continue
       const priced = replayLogContent(content, price)
-      if (priced.length === 0) continue
+      // 空结果同样入缓存：无计费事件的会话若在此 continue，其日志便每次都重新
+      // readFileSync + 逐帧 zstdDecompressSync。紧随其后的空结果守卫本就为此而设；
+      // 修订号（mtime+size）变化时仍会重新回放。
       cached = { rev, priced }
       logCache.set(cacheKey, cached)
       if (logCache.size > 400) {

@@ -31,6 +31,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 ### Changed
 - Refresh the models.dev catalog automatically every 7 days while the host keeps running (hourly staleness check), instead of only on process start.
 - Replay call counts from session logs modified within the 7-day window only, so a cold state request no longer scans the entire history.
+- Reuse a single Beijing-day formatter and cache sessions with no billable events, removing multi-second synchronous aggregation stalls.
 - Add strict TypeScript checking to local packaging, CI, and release validation.
 - Replace the localStorage model pointer with an atomic IndexedDB manifest plus per-model records, preserving config/resource consistency while supporting the bounded recent-model library.
 - Pause the PIXI ticker and idle motion loop while the page is hidden.
