@@ -7,6 +7,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 > The changes in this section are available from GitHub `main` starting at commit [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387). They have not yet been assigned a new release version or tag; the package metadata still reports `0.4.1`.
 
 ### Fixed
+- Declare the per-route `auth` policy that DSH 0.2.2-rc.2's WebServer started enforcing, and stop relying on the removed `connection.requestRejection` hook; private browser routes stay session-authenticated while `/health` and the Bearer-only desktop-companion routes are explicitly anonymous. Every private route failed on that release until the plugin was reloaded with this change.
 - Read the balance from the signed-in DSH account-platform wallet (`deepseekAccount`) first, falling back to `DEEPSEEK_API_KEY` only when the service is missing, signed out, or failing; DSH releases that no longer expose an API-key credential previously showed the balance as unavailable.
 - Price non-DeepSeek provider/model routes from a validated weekly `models.dev` snapshot instead of forcing every external model to zero; preserve exact provider separation and DeepSeek's curated historical policies.
 - Price the DSH adapter's `deepseek-flash` model id with the curated official Flash policy instead of reporting zero cost.

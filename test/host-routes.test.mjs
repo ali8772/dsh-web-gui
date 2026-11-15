@@ -507,3 +507,39 @@ test('pricing route requires browser authentication and rejects non-GET methods'
     await rm(temp, { recursive: true, force: true })
   }
 })
+
+test('routes work when the DSH release no longer exposes the connection rejection hook', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-routes-test-'))
+  try {
+    // DSH 0.2.2-rc.2 起准入交给 WebServer，`requestRejection` 被移除。
+    const harness = await startHarness(temp, undefined, {
+      connection: {},
+      get(name) { return name === 'dshHomePath' ? () => temp : undefined },
+    })
+    const response = makeResponse()
+    await harness.routes.get('/api/whale-pet/state').handler(request('GET'), response)
+
+    assert.equal(response.result().status, 200)
+    assert.equal(JSON.parse(response.result().body).ok, true)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('route registration declares the auth policy the DSH webserver enforces', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-routes-test-'))
+  try {
+    const harness = await startHarness(temp, undefined)
+    const authOf = (path) => harness.routes.get(path).auth
+
+    assert.equal(authOf('/api/whale-pet/health'), 'anonymous')
+    assert.equal(authOf('/api/whale-pet/state'), 'required')
+    assert.equal(authOf('/api/whale-pet/tasks'), 'required')
+    assert.equal(authOf('/api/whale-pet/task-summary'), 'required')
+    assert.equal(authOf('/dsh-whale-pet/companion/v1/state'), 'anonymous')
+    assert.equal(authOf('/dsh-whale-pet/companion/v1/tasks'), 'anonymous')
+    assert.equal(authOf('/dsh-whale-pet/companion/v1/task-summary'), 'anonymous')
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})

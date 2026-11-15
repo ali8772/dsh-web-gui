@@ -109,7 +109,7 @@ dsh plugin --profile web add ./dsh-whale-pet-<version>.tgz
 - 会话日志仅用于调用次数、任务进度与按模型计费。
 - 导入的 Live2D 模型保存在当前浏览器的 IndexedDB，不上传给插件宿主或第三方。URL 导入阶段浏览器会直接请求用户填写的模型服务器。
 - ZIP 解压限制为最多 2,048 个文件、解压后 256 MiB，并拒绝绝对 URL/路径和逃出包根目录的资源引用；URL 导入另有 256 文件/32 MiB 单文件/128 MiB 总量限制。
-- 私有浏览器路由统一走 DSH Host/Origin 与浏览器会话认证，64 KiB 请求体上限；任务批次中的损坏日志被隔离为单行错误，不拖垮其余结果。
+- 私有浏览器路由由 DSH WebServer 的 `auth` 策略（DSH 0.2.2-rc.2 起）与 Host/Origin + 浏览器会话校验（旧版）把关；`/health` 与桌面伴侣路由显式声明匿名，后者只能凭 Bearer 令牌访问。请求体上限 64 KiB；任务批次中的损坏日志被隔离为单行错误，不拖垮其余结果。
 - 桌面伴侣 token 明文只在签发响应出现一次；DSH credentials 中只保留 verifier，浏览器不会持久化 token。
 
 不要把凭据、profile 文件、会话日志、真实账户截图或无权分发的 Live2D 模型提交到 Git。

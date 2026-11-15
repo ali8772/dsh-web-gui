@@ -108,7 +108,7 @@ Restart `dsh web`, then refresh the browser. Do not add a second insertion to th
 - Session logs are used only for call counts, task progress, and per-model pricing.
 - Imported Live2D models stay in the current browser's IndexedDB and are not uploaded to the plugin host or third parties. During URL import the browser fetches directly from the model server you enter.
 - ZIP extraction is limited to 2,048 files and 256 MiB uncompressed, and rejects absolute URLs/paths and references escaping the archive root; URL imports have separate 256-file/32-MiB-per-file/128-MiB-total budgets.
-- Private browser routes apply the DSH Host/Origin and browser-session checks plus a 64 KiB body cap. A corrupt session log is isolated to one batch row rather than failing healthy rows.
+- Private browser routes are gated by the DSH WebServer `auth` policy (DSH 0.2.2-rc.2 and later) and by the Host/Origin plus browser-session checks on older releases; `/health` and the desktop-companion routes declare `anonymous` explicitly and the latter only accept a Bearer token. Bodies are capped at 64 KiB, and a corrupt session log is isolated to one batch row rather than failing healthy rows.
 - A companion token appears in plaintext only in its issue response; DSH credentials store a verifier, and the browser never persists the token.
 
 Never commit credentials, profile files, session logs, real account screenshots, or Live2D models you are not entitled to distribute.

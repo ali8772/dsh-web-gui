@@ -22,7 +22,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
-import type { IncomingMessage } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
@@ -55,6 +55,27 @@ const CUBISM_CORE_PATH = fileURLToPath(new URL('./live2dcubismcore.min.js', impo
 const IMMUTABLE_JS_HEADERS = {
   'content-type': 'application/javascript; charset=utf-8',
   'cache-control': 'public, max-age=31536000, immutable',
+}
+
+/** 新版 DSH WebServer 的路由准入策略；旧版宿主类型未声明该字段。 */
+type RouteAuth = 'anonymous' | 'required' | 'deny'
+
+interface WhalePetRoute {
+  readonly kind: 'exact'
+  readonly path: string
+  readonly auth?: RouteAuth
+  readonly handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
+}
+
+/**
+ * 给路由标注准入策略。
+ *
+ * DSH 0.2.2-rc.2 起由 WebServer 统一裁决：路由默认要求已认证会话，匿名路由
+ * （健康检查、桌面伴侣的 Bearer 路由）必须显式声明 `anonymous`。旧版 DSH 不认识
+ * 该字段会忽略它，私有路由仍由 `requestRejection` 守护。
+ */
+function routeWithAuth(route: WhalePetRoute): Parameters<Context['webServer']['register']>[0] {
+  return route as unknown as Parameters<Context['webServer']['register']>[0]
 }
 
 export const name = 'dsh-whale-pet'
@@ -152,7 +173,10 @@ function rejectPrivateRequest(
   req: IncomingMessage,
   res: { writeHead: (status: number, headers: Record<string, string>) => void; end: (body: string) => void },
 ): boolean {
-  const status = ctx.connection.requestRejection(req)
+  // DSH 0.2.2-rc.2 移除了 `requestRejection`：准入改由 WebServer 的 `auth` 策略
+  // 在进入 handler 前完成，这里只剩旧版宿主的兼容守护。
+  const connection = ctx.connection as { requestRejection?: (request: IncomingMessage) => number | undefined } | undefined
+  const status = typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : undefined
   if (status === undefined) return false
   res.writeHead(status, {
     'cache-control': 'no-store',
@@ -440,20 +464,22 @@ export function apply(ctx: Context): void {
   }, 'dsh-whale-pet: weekly pricing refresh')
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: HEALTH_PATH,
+      auth: 'anonymous',
       handler: (_req, res) => {
         sendJson(res, 200, { plugin: name, version: VERSION, ok: true })
       },
-    }),
+    })),
     'dsh-whale-pet: health route',
   )
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: STATE_PATH,
+      auth: 'required',
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         try {
@@ -472,15 +498,16 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: state route',
   )
 
   // 价目表与近 7 天按模型用量：两者使用同一个定价快照，保证「统计按价目表计价」。
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: PRICING_PATH,
+      auth: 'required',
       handler: (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         if (req.method !== 'GET') {
@@ -521,15 +548,16 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: pricing route',
   )
 
   // 真实任务进度：POST { ids: string[] } → 每会话 { totalTodos, doneTodos, pct, stage, tool, turn, step }
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: TASKS_PATH,
+      auth: 'required',
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         try {
@@ -558,15 +586,16 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: tasks route',
   )
 
   // 任务完成汇总：POST { id: string } → 单会话 token/费用汇总
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: TASK_SUMMARY_PATH,
+      auth: 'required',
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         try {
@@ -587,15 +616,16 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: task-summary route',
   )
 
   // OpenCode Go 套餐额度：GET → { ok, fetchedAt, usage }（凭证与网关请求全部留在宿主）
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: OPENCODE_GO_PATH,
+      auth: 'required',
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         try {
@@ -607,15 +637,16 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: opencode-go route',
   )
 
   // 已认证浏览器管理桌面伴侣 grants。令牌明文只在 issue 响应出现一次。
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.companions,
+      auth: 'required',
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         if (req.method !== 'GET') {
@@ -630,14 +661,15 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: companion list route',
   )
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.companionIssue,
+      auth: 'required',
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         if (req.method !== 'POST') {
@@ -660,14 +692,15 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: companion issue route',
   )
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.companionRevoke,
+      auth: 'required',
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         if (req.method !== 'POST') {
@@ -689,7 +722,7 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: companion revoke route',
   )
 
@@ -712,9 +745,10 @@ export function apply(ctx: Context): void {
   }
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.companionState,
+      auth: 'anonymous',
       handler: async (req, res) => {
         if (await rejectCompanion(req, res)) return
         if (req.method !== 'GET') {
@@ -731,14 +765,15 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: companion state route',
   )
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.companionTasks,
+      auth: 'anonymous',
       handler: async (req, res) => {
         if (await rejectCompanion(req, res)) return
         if (req.method !== 'POST') {
@@ -770,14 +805,15 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: companion tasks route',
   )
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.companionTaskSummary,
+      auth: 'anonymous',
       handler: async (req, res) => {
         if (await rejectCompanion(req, res)) return
         if (req.method !== 'POST') {
@@ -800,14 +836,15 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: companion task summary route',
   )
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.companionOpenCodeGo,
+      auth: 'anonymous',
       handler: async (req, res) => {
         if (await rejectCompanion(req, res)) return
         if (req.method !== 'GET') {
@@ -823,15 +860,16 @@ export function apply(ctx: Context): void {
           sendJson(res, 500, { ok: false, error: 'internal', message: 'internal error' })
         }
       },
-    }),
+    })),
     'dsh-whale-pet: companion opencode-go route',
   )
 
   // Live2D 动态 chunk（pixi + 渲染器，仅配置模型后浏览器动态加载）。
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.live2d,
+      auth: 'required',
       handler: (_req, res) => {
         try {
           const code = readFileSync(LIVE2D_CHUNK_PATH, 'utf8')
@@ -844,14 +882,15 @@ export function apply(ctx: Context): void {
           res.end('live2d chunk not found')
         }
       },
-    }),
+    })),
     'dsh-whale-pet: live2d chunk route',
   )
 
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.live2dZipWorker,
+      auth: 'required',
       handler: (_req, res) => {
         try {
           const code = readFileSync(LIVE2D_ZIP_WORKER_PATH, 'utf8')
@@ -864,15 +903,16 @@ export function apply(ctx: Context): void {
           res.end('Live2D ZIP Worker not found')
         }
       },
-    }),
+    })),
     'dsh-whale-pet: Live2D ZIP Worker route',
   )
 
   // 官方 Cubism Core 的本地副本。必须先于上面的 ESM chunk 执行，且不访问 CDN。
   ctx.effect(
-    () => ctx.webServer.register({
+    () => ctx.webServer.register(routeWithAuth({
       kind: 'exact',
       path: WHALE_PET_PATHS.cubismCore,
+      auth: 'required',
       handler: (_req, res) => {
         try {
           const code = readFileSync(CUBISM_CORE_PATH, 'utf8')
@@ -885,7 +925,7 @@ export function apply(ctx: Context): void {
           res.end('Cubism Core runtime not found')
         }
       },
-    }),
+    })),
     'dsh-whale-pet: Cubism Core route',
   )
 }
