@@ -7,6 +7,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 > The changes in this section are available from GitHub `main` starting at commit [`7a50895`](https://github.com/ali8772/dsh-web-gui/commit/7a50895bda73bd07f61406583a2b9ac1fd3a5387). They have not yet been assigned a new release version or tag; the package metadata still reports `0.4.1`.
 
 ### Fixed
+- Read the balance from the signed-in DSH account-platform wallet (`deepseekAccount`) first, falling back to `DEEPSEEK_API_KEY` only when the service is missing, signed out, or failing; DSH releases that no longer expose an API-key credential previously showed the balance as unavailable.
 - Price non-DeepSeek provider/model routes from a validated weekly `models.dev` snapshot instead of forcing every external model to zero; preserve exact provider separation and DeepSeek's curated historical policies.
 - Price the DSH adapter's `deepseek-flash` model id with the curated official Flash policy instead of reporting zero cost.
 - Discover the newest versioned session-log artifacts (`session.v4.jsonl[.zstd]` and later) so task progress and usage statistics include current sessions after a persistence upgrade.

@@ -40,7 +40,7 @@
 
 ### Balance and spend (merged page)
 
-- Host-side balance lookup via `DEEPSEEK_API_KEY`; credentials never reach the browser.
+- Host-side balance lookup prefers the DSH account-platform wallet (no API key needed) and falls back to `DEEPSEEK_API_KEY` through DSH credentials on older DSH builds or when signed out; credentials never reach the browser.
 - Balance and today/seven-day spend share one page; amounts are strictly accumulated from account balance decreases.
 - Top-ups or grants update the baseline and never reduce accumulated spend; the first successful read establishes a zero-spend baseline.
 

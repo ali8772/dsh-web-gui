@@ -7,11 +7,12 @@
  *   GET /api/whale-pet/state        — 余额 + 今日/近7天消费
  *   GET /api/whale-pet/opencode-go  — OpenCode Go 套餐额度（5 小时/7 天/1 个月）
  *
- * 余额通过凭据服务解析 `DEEPSEEK_API_KEY`（与 llm-deepseek 适配器同一引用），
- * 请求 DeepSeek 官方 `/user/balance`。消费金额以相邻余额快照的下降值为准：
- * 首次观察建立基线，后续下降按北京时间记入当日；充值导致的余额上升只更新
- * 基线，不抵扣既有消费。会话日志仅用于补充调用次数和任务进度，并兼容当前 DSH 的
- * `session.v3.jsonl(.zstd)` 持久化文件。
+ * 余额优先读取 DSH 账号平台（`deepseekAccount` 服务，登录即用、无需 API Key）；
+ * 该服务不可用或未登录时，回退到凭据服务解析 `DEEPSEEK_API_KEY`（与 llm-deepseek
+ * 适配器同一引用）并请求 DeepSeek 官方 `/user/balance`。消费金额以相邻余额快照的
+ * 下降值为准：首次观察建立基线，后续下降按北京时间记入当日；充值导致的余额上升只
+ * 更新基线，不抵扣既有消费。会话日志仅用于补充调用次数和任务进度，并兼容当前 DSH 的
+ * 版本化的 `session.v<N>.jsonl(.zstd)` 持久化文件。
  * OpenCode Go 额度由官方网关 `https://opencode.ai/zen/go/v1/usage` 提供，
  * 凭证优先 `OPENCODE_GO_API_KEY`，回退 opencode CLI 登录文件；密钥不出宿主。
  * API Key 永不出宿主：浏览器只访问这些本地路由。
@@ -101,7 +102,27 @@ interface BalanceSnapshot {
     readonly grantedBalance: number | null
     readonly toppedUpBalance: number | null
   }>
+  /** 余额来源：DSH 账号平台钱包，或 DEEPSEEK_API_KEY 的官方余额接口。 */
+  readonly source: 'account' | 'api-key'
   readonly fetchedAt: number
+}
+
+/** DSH `deepseekAccount` 服务的只读子集（不依赖该包的可选类型）。 */
+interface AccountWallet {
+  readonly currency: string
+  readonly balance: string
+}
+
+interface DeepSeekAccountLike {
+  getBalance(client: {
+    readonly version: string
+    readonly locale: string
+    readonly timezoneOffsetSeconds: number
+  }): Promise<
+    | { readonly status: 'ready'; readonly value: readonly AccountWallet[]; readonly bonusWallets: readonly AccountWallet[] }
+    | { readonly status: 'failed' }
+    | null
+  >
 }
 
 interface SpendSnapshot {
@@ -229,13 +250,106 @@ function parseBalanceBody(body: unknown, fetchedAt: number): BalanceSnapshot | n
     grantedBalance: primary.grantedBalance,
     toppedUpBalance: primary.toppedUpBalance,
     infos,
+    source: 'api-key',
+    fetchedAt,
+  }
+}
+
+function parseDecimal(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * 把 DSH 账号平台的钱包余额投影为余额快照。
+ *
+ * 平台把「充值余额」(`value`) 与「赠金余额」(`bonusWallets`) 分开返回，二者相加
+ * 才是可用总额；与官方 `/user/balance` 的 total = topped_up + granted 语义一致。
+ * 未登录、读取失败或数据不完整都返回 null，由调用方回退到 API Key 路径。
+ */
+function accountBalanceSnapshot(
+  wallets: readonly AccountWallet[],
+  bonusWallets: readonly AccountWallet[],
+  fetchedAt: number,
+): BalanceSnapshot | null {
+  const byCurrency = new Map<string, { toppedUp: number; granted: number }>()
+  const add = (list: readonly AccountWallet[], field: 'toppedUp' | 'granted'): boolean => {
+    let added = false
+    for (const wallet of list) {
+      if (typeof wallet?.currency !== 'string' || wallet.currency === '') continue
+      const amount = parseDecimal(wallet.balance)
+      if (amount === null || amount < 0) continue
+      const row = byCurrency.get(wallet.currency) ?? { toppedUp: 0, granted: 0 }
+      row[field] += amount
+      byCurrency.set(wallet.currency, row)
+      added = true
+    }
+    return added
+  }
+  const hasToppedUp = add(wallets, 'toppedUp')
+  const hasGranted = add(bonusWallets, 'granted')
+  if (!hasToppedUp && !hasGranted) return null
+
+  const infos = [...byCurrency.entries()].map(([currency, row]) => ({
+    currency,
+    totalBalance: Math.round((row.toppedUp + row.granted) * 100) / 100,
+    grantedBalance: Math.round(row.granted * 100) / 100,
+    toppedUpBalance: Math.round(row.toppedUp * 100) / 100,
+  }))
+  const primary = infos.find((info) => info.currency === 'CNY') ?? infos[0]
+  if (primary === undefined) return null
+  return {
+    available: true,
+    currency: primary.currency,
+    totalBalance: primary.totalBalance,
+    grantedBalance: primary.grantedBalance,
+    toppedUpBalance: primary.toppedUpBalance,
+    infos,
+    source: 'account',
     fetchedAt,
   }
 }
 
 /**
+ * 读取 DSH 账号平台余额。旧版 DSH 没有该服务或已退出登录时返回 null，
+ * 由 API Key 路径接管；任何异常都不允许拖垮 state 路由。
+ */
+async function fetchAccountBalance(ctx: Context): Promise<BalanceSnapshot | null> {
+  let account: DeepSeekAccountLike | undefined
+  try {
+    account = typeof ctx.get === 'function' ? ctx.get('deepseekAccount') as DeepSeekAccountLike | undefined : undefined
+  } catch {
+    return null
+  }
+  if (account === undefined || account === null || typeof account.getBalance !== 'function') return null
+  try {
+    const result = await account.getBalance({
+      version: VERSION,
+      locale: resolveLocale(),
+      timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+    })
+    if (result === null || result === undefined || result.status !== 'ready') return null
+    return accountBalanceSnapshot(result.value, result.bonusWallets, Date.now())
+  } catch {
+    return null
+  }
+}
+
+function resolveLocale(): string {
+  try {
+    const locale = Intl.DateTimeFormat().resolvedOptions().locale
+    return typeof locale === 'string' && locale !== '' ? locale : 'zh-CN'
+  } catch {
+    return 'zh-CN'
+  }
+}
+
+/**
  * 拉取余额（带 55s 内存缓存；并发请求合并为同一次抓取）。
- * 成功时总是返回余额快照，失败返回 null 并缓存短暂不可用。
+ * 优先使用 DSH 账号平台的钱包余额（无需 API Key），其次回退到
+ * `DEEPSEEK_API_KEY` 的官方余额接口。全部失败返回 null。
  */
 async function fetchBalance(ctx: Context): Promise<BalanceSnapshot | null> {
   if (balanceMemo !== undefined && Date.now() - balanceMemo.at < BALANCE_CACHE_MS) {
@@ -243,23 +357,25 @@ async function fetchBalance(ctx: Context): Promise<BalanceSnapshot | null> {
   }
   if (balanceInFlight !== undefined) return balanceInFlight
   balanceInFlight = (async (): Promise<BalanceSnapshot | null> => {
-    let snapshot: BalanceSnapshot | null = null
-    try {
-      const hit = await ctx.credentials.resolve(CREDENTIAL_REF)
-      if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') {
-        const response = await fetch(balanceUrl(), {
-          headers: {
-            Authorization: `Bearer ${hit.value}`,
-            Accept: 'application/json',
-          },
-          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        })
-        if (response.ok) {
-          snapshot = parseBalanceBody(await response.json(), Date.now())
+    let snapshot = await fetchAccountBalance(ctx)
+    if (snapshot === null) {
+      try {
+        const hit = await ctx.credentials.resolve(CREDENTIAL_REF)
+        if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') {
+          const response = await fetch(balanceUrl(), {
+            headers: {
+              Authorization: `Bearer ${hit.value}`,
+              Accept: 'application/json',
+            },
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          })
+          if (response.ok) {
+            snapshot = parseBalanceBody(await response.json(), Date.now())
+          }
         }
+      } catch {
+        // 网络或解析失败 → null，客户端显示余额不可用
       }
-    } catch {
-      // 网络或解析失败 → null，客户端显示余额不可用
     }
     balanceMemo = { at: Date.now(), value: snapshot }
     return snapshot

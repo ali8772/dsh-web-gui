@@ -6,7 +6,7 @@
  * 展示调用次数，并保留旧价格字段以兼容内部结构。
  *
  * 日志格式：`$DSH_HOME/sessions/<workspace>/<session-id>/session.jsonl(.zstd)` 或
- * 当前版本的 `session.v3.jsonl(.zstd)`。同一会话同时存在多个版本时优先当前版本。
+ * 版本化的 `session.v<N>.jsonl(.zstd)`；同一会话存在多个版本时优先版本号最高的文件。
  * `.zstd` 为多个可独立解码的 Zstandard frame 拼接（含 torn 尾帧），与
  * `dsh-session-persistence-jsonl` 的容器语义一致。
  */
