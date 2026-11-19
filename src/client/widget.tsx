@@ -190,7 +190,8 @@ export interface OpenCodeGoWindow {
 
 export interface OpenCodeGoUsage {
   readonly configured: boolean
-  readonly keySource: 'env' | 'auth' | null
+  /** 'dsh' = DSH 凭证服务，'env' = 进程环境变量，'auth' = opencode CLI 登录文件。 */
+  readonly keySource: 'dsh' | 'env' | 'auth' | null
   readonly error: string | null
   readonly fetchedAt: number
   readonly windows: Record<OpenCodeGoWindowKey, OpenCodeGoWindow>
@@ -1936,7 +1937,7 @@ export function WhalePetWidget(_props: WhalePetWidgetProps): JSX.Element {
               ? h('div', { className: 'wp-go-hint' }, goFetching ? '正在查询 OpenCode Go 额度…' : '')
               : !goUsage.configured
                 ? h('div', { className: 'wp-go-hint' },
-                    '未检测到 OpenCode Go 登录。\n请用 opencode 登录并开通 Go 套餐，或设置 OPENCODE_GO_API_KEY 环境变量。',
+                    '未检测到 OpenCode Go 凭证。\n请在 DSH 的凭证里配置 OPENCODE_GO_API_KEY，或用 opencode 登录并开通 Go 套餐。',
                   )
                 : goUsage.windows.rolling.percent === null
                   ? h('div', { className: 'wp-go-hint wp-error' }, '额度查询失败：' + (goUsage.error ?? '未知错误'))

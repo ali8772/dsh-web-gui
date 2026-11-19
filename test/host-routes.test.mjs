@@ -526,6 +526,52 @@ test('routes work when the DSH release no longer exposes the connection rejectio
   }
 })
 
+test('opencode-go route queries the gateway with the credential DSH itself resolves', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-routes-test-'))
+  const originalFetch = globalThis.fetch
+  try {
+    // 用户的 DSH 把 `OPENCODE_GO_API_KEY` 存在凭证服务里；插件必须用同一把钥匙，
+    // 否则会拿到 CLI 登录文件里那把已过期的旧钥匙（gateway 401）。
+    let authorization = null
+    globalThis.fetch = async (input, init) => {
+      if (String(input).includes('models.dev')) return { ok: false, status: 503, text: async () => '' }
+      authorization = init?.headers?.Authorization ?? null
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          usage: {
+            rolling: { status: 'ok', percent: 42, resetsAt: '2026-11-20T00:00:00.000Z' },
+            weekly: { status: 'ok', percent: 6, resetsAt: '2026-11-23T00:00:00.000Z' },
+            monthly: { status: 'ok', percent: 3, resetsAt: '2026-12-19T00:00:00.000Z' },
+          },
+        }),
+      }
+    }
+    const harness = await startHarness(temp, undefined, {
+      credentials: {
+        async resolve(ref) {
+          return ref === 'OPENCODE_GO_API_KEY' ? { value: 'oc_from_dsh' } : undefined
+        },
+        async readRecord() { return undefined },
+        async modifyRecord(_key, mutate) { return mutate(undefined) },
+      },
+    })
+    const response = makeResponse()
+    await harness.routes.get('/api/whale-pet/opencode-go').handler(request('GET'), response)
+
+    const body = JSON.parse(response.result().body)
+    assert.equal(response.result().status, 200)
+    assert.equal(authorization, 'Bearer oc_from_dsh')
+    assert.equal(body.usage.keySource, 'dsh')
+    assert.equal(body.usage.windows.rolling.percent, 42)
+    assert.equal(body.usage.windows.rolling.remaining, 58)
+  } finally {
+    globalThis.fetch = originalFetch
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
 test('route registration declares the auth policy the DSH webserver enforces', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-routes-test-'))
   try {

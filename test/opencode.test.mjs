@@ -77,6 +77,121 @@ test('resolveOpenCodeGoKey prefers the env var and falls back to the opencode CL
   }
 })
 
+test('resolveOpenCodeGoKey prefers the key the DSH host already resolved', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-opencode-dsh-key-test-'))
+  try {
+    const { resolveOpenCodeGoKey } = await loadOpenCodeModule(temp)
+    const authDir = join(temp, '.local', 'share', 'opencode')
+    await mkdir(authDir, { recursive: true })
+    await writeFile(join(authDir, 'auth.json'), JSON.stringify({
+      'opencode-go': { type: 'api', key: 'sk-go-from-cli' },
+    }), 'utf8')
+
+    // DSH 的凭证服务（`.credentials.yaml` 的 refs / `.env`）是权威来源：
+    // 它拿到的就是 DSH 自己发请求用的那把密钥。
+    assert.deepEqual(resolveOpenCodeGoKey({ OPENCODE_GO_API_KEY: 'sk-env' }, temp, 'oc_from_dsh'), {
+      key: 'oc_from_dsh',
+      source: 'dsh',
+    })
+    assert.deepEqual(resolveOpenCodeGoKey({}, temp, 'oc_from_dsh'), { key: 'oc_from_dsh', source: 'dsh' })
+    // 空值等于没给 → 继续按环境变量、CLI 登录文件回退。
+    assert.deepEqual(resolveOpenCodeGoKey({ OPENCODE_GO_API_KEY: 'sk-env' }, temp, ''), { key: 'sk-env', source: 'env' })
+    assert.deepEqual(resolveOpenCodeGoKey({}, temp, null), { key: 'sk-go-from-cli', source: 'auth' })
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('fetchOpenCodeGoUsage sends the DSH-resolved credential and labels its source', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-opencode-dsh-fetch-test-'))
+  try {
+    const { fetchOpenCodeGoUsage, resetOpenCodeGoCache } = await loadOpenCodeModule(temp)
+    resetOpenCodeGoCache()
+
+    const seen = []
+    const fetchImpl = async (url, init) => {
+      seen.push({ url: String(url), authorization: init?.headers?.Authorization })
+      return { ok: true, status: 200, json: async () => REAL_SAMPLE }
+    }
+    const usage = await fetchOpenCodeGoUsage({
+      env: {},
+      homeDir: temp,
+      dshKey: 'oc_from_dsh',
+      fetchImpl,
+      cacheMs: 0,
+    })
+
+    assert.equal(usage.keySource, 'dsh')
+    assert.equal(usage.error, null)
+    assert.equal(usage.windows.rolling.percent, 5)
+    assert.equal(seen.length, 1)
+    assert.equal(seen[0].authorization, 'Bearer oc_from_dsh')
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test('fetchOpenCodeGoUsage turns gateway auth failures into actionable errors', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-opencode-error-test-'))
+  try {
+    const { fetchOpenCodeGoUsage, resetOpenCodeGoCache } = await loadOpenCodeModule(temp)
+    const expiredBody = JSON.stringify({
+      error: {
+        type: 'authentication_error',
+        code: 'api_key_expired',
+        message: 'This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store.',
+      },
+    })
+    const base = { env: {}, homeDir: temp, dshKey: 'oc_dead', cacheMs: 0 }
+
+    // 过期密钥：说明发生了什么，并把用户送到可以换钥匙的页面，而不是只回 "gateway 401"。
+    resetOpenCodeGoCache()
+    const expired = await fetchOpenCodeGoUsage({
+      ...base,
+      fetchImpl: async () => ({ ok: false, status: 401, text: async () => expiredBody }),
+    })
+    assert.equal(expired.configured, true)
+    assert.equal(expired.keySource, 'dsh')
+    assert.match(expired.error, /已过期/u)
+    assert.match(expired.error, /opencode\.ai\/console\/account#api-keys/u)
+
+    // 非 JSON 的 401 也要能读懂。
+    resetOpenCodeGoCache()
+    const bare = await fetchOpenCodeGoUsage({
+      ...base,
+      fetchImpl: async () => ({ ok: false, status: 401, text: async () => 'Unauthorized' }),
+    })
+    assert.match(bare.error, /凭证无效/u)
+    assert.match(bare.error, /401/u)
+
+    // 网关故障保持原样的状态码描述。
+    resetOpenCodeGoCache()
+    const down = await fetchOpenCodeGoUsage({
+      ...base,
+      fetchImpl: async () => ({ ok: false, status: 502, text: async () => '' }),
+    })
+    assert.equal(down.error, 'gateway 502')
+
+    // CLI 登录文件里的旧密钥同样过期时，要指出这把钥匙来自哪里。
+    resetOpenCodeGoCache()
+    const authDir = join(temp, '.local', 'share', 'opencode')
+    await mkdir(authDir, { recursive: true })
+    await writeFile(join(authDir, 'auth.json'), JSON.stringify({
+      'opencode-go': { type: 'api', key: 'sk-go-from-cli' },
+    }), 'utf8')
+    const cli = await fetchOpenCodeGoUsage({
+      env: {},
+      homeDir: temp,
+      cacheMs: 0,
+      fetchImpl: async () => ({ ok: false, status: 401, text: async () => expiredBody }),
+    })
+    assert.equal(cli.keySource, 'auth')
+    assert.match(cli.error, /opencode CLI/u)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
 test('fetchOpenCodeGoUsage caches, coalesces, and falls back to the last good data', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-whale-opencode-fetch-test-'))
   try {

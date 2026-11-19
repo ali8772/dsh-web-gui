@@ -47,7 +47,8 @@
 ### OpenCode Go 套餐额度
 
 - 独立页面显示滚动 5 小时、7 天、1 个月窗口的已用、剩余、状态与重置时间。
-- 凭证优先 `OPENCODE_GO_API_KEY`，回退 opencode CLI 登录文件 `~/.local/share/opencode/auth.json` 的 `opencode-go.key`；密钥不出宿主。
+- 凭证按权威程度解析：先问 DSH 凭证服务（`.credentials.yaml` 的 refs 或 `.env` 里的 `OPENCODE_GO_API_KEY`，与 DSH 调该网关用的是同一把钥匙），其次进程环境变量，最后回退 opencode CLI 登录文件 `~/.local/share/opencode/auth.json` 的 `opencode-go.key`；密钥不出宿主。
+- 密钥过期或无效时给出可照着做的说明（含新建密钥的控制台地址），不再只显示 `gateway 401`。
 - 宿主做 30 秒缓存与并发合并；失败时回退上次成功数据。
 
 ### 任务与完成弹窗

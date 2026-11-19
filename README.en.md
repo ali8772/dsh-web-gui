@@ -47,7 +47,8 @@
 ### OpenCode Go plan quota
 
 - Dedicated page for rolling 5-hour, 7-day, and monthly windows with used, remaining, status, and reset time.
-- Credentials resolve from `OPENCODE_GO_API_KEY` first, then the opencode CLI login file `~/.local/share/opencode/auth.json` (`opencode-go.key`); keys stay on the host.
+- Credentials resolve by authority: the DSH credential service first (the `OPENCODE_GO_API_KEY` in `.credentials.yaml` refs or `.env` — the same key DSH itself uses for that gateway), then the process environment, and finally the opencode CLI login file `~/.local/share/opencode/auth.json` (`opencode-go.key`); keys stay on the host.
+- An expired or rejected key produces actionable guidance (including the console URL for a new key) instead of a bare `gateway 401`.
 - The host applies a 30-second cache with concurrent coalescing and falls back to the last successful snapshot.
 
 ### Tasks and completion dialog

@@ -18,7 +18,7 @@
  * API Key 永不出宿主：浏览器只访问这些本地路由。
  */
 
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
@@ -96,6 +96,12 @@ const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 /** 与 llm-deepseek 适配器对齐的环境变量覆盖。 */
 const BASE_URL_ENV = 'DEEPSEEK_BASE_URL'
 const CREDENTIAL_REF = credentialRef('DEEPSEEK_API_KEY')
+/**
+ * OpenCode Go 的密钥存在 DSH 凭证服务里（`.credentials.yaml` 的 refs 或 `.env`），
+ * 与 DSH 自己调用该网关时用的是同一把钥匙；插件必须走这条路径，
+ * 否则只会读到 opencode CLI 登录文件里可能已经过期的旧密钥。
+ */
+const OPENCODE_CREDENTIAL_REF = credentialRef('OPENCODE_GO_API_KEY')
 const BALANCE_PATH = '/user/balance'
 
 const BALANCE_CACHE_MS = 55_000
@@ -371,6 +377,19 @@ function resolveLocale(): string {
 }
 
 /**
+ * 从 DSH 凭证服务取一把密钥；未配置或读取失败都返回 undefined，
+ * 交由调用方（如 opencode.ts）继续走自己的回退链。
+ */
+async function resolveCredentialValue(ctx: Context, ref: CredentialRef): Promise<string | undefined> {
+  try {
+    const hit = await ctx.credentials.resolve(ref)
+    return typeof hit?.value === 'string' && hit.value !== '' ? hit.value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * 拉取余额（带 55s 内存缓存；并发请求合并为同一次抓取）。
  * 优先使用 DSH 账号平台的钱包余额（无需 API Key），其次回退到
  * `DEEPSEEK_API_KEY` 的官方余额接口。全部失败返回 null。
@@ -629,7 +648,9 @@ export function apply(ctx: Context): void {
       handler: async (req, res) => {
         if (rejectPrivateRequest(ctx, req, res)) return
         try {
-          const usage = await fetchOpenCodeGoUsage()
+          const usage = await fetchOpenCodeGoUsage({
+            dshKey: await resolveCredentialValue(ctx, OPENCODE_CREDENTIAL_REF),
+          })
           sendJson(res, 200, { ok: true, fetchedAt: usage.fetchedAt, usage })
         } catch (error) {
           ctx.logger?.warn?.('dsh-whale-pet: opencode-go route failed')
@@ -852,7 +873,9 @@ export function apply(ctx: Context): void {
           return
         }
         try {
-          const usage = await fetchOpenCodeGoUsage()
+          const usage = await fetchOpenCodeGoUsage({
+            dshKey: await resolveCredentialValue(ctx, OPENCODE_CREDENTIAL_REF),
+          })
           sendJson(res, 200, { ok: true, fetchedAt: usage.fetchedAt, usage })
         } catch (error) {
           ctx.logger?.warn?.('dsh-whale-pet: companion opencode-go failed')
